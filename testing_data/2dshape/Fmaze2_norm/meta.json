@@ -1,0 +1,9 @@
+{
+  "shape_scale": 1.0,
+  "shape_dxf": "/workspace/ntrl-demo/datasets/2dshape/Fshape_norm.dxf",
+  "env_dxf": "/workspace/ntrl-demo/datasets/2dshape/Fmaze2_norm.dxf",
+  "margin": 0.1,
+  "offset": 0.005,
+  "theta_norm": 6.283185307179586,
+  "testing_data": true
+}

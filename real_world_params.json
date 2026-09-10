@@ -1,0 +1,62 @@
+{
+  "_README": "Physical measurements of the hardware push-T rig. Edit these after measuring on the table and running arm_calibrate.py / camera_calibrate.py. Loaded through real_world_params.py; CLI flags on the scripts still override. Lengths are centimetres, angles degrees, robot-base positions metres.",
+
+  "environment": {
+    "env_len_cm": 70.0,
+    "env_x_cm": null,
+    "env_y_cm": null,
+    "offset_to_origin_cm": [39.8, 32.5],
+    "rotation_deg": 180.0
+  },
+
+  "aruco": {
+    "dict": "DICT_4X4_50",
+    "aruco0_len_cm": 7.0,
+    "field_marker_id": 0,
+    "field_rect_cm": [94.0, 66.0],
+    "origin_marker_yaw_deg": 90.0,
+    "track_marker_id": 1,
+    "tee_marker_id": 2,
+    "tee_marker_offset": [0.0, 0.0, 0.0]
+  },
+
+  "robot": {
+    "ip": "192.168.10.2",
+    "startpos_json": "calibration/arm/startpos.json",
+    "table_theta_deg": 0.0,
+    "z_push_m": null,
+    "workspace_box_m": {
+      "x": [-0.90, 0.90],
+      "y": [-0.90, 0.90],
+      "z": [0.02, 0.70]
+    }
+  },
+
+  "camera": {
+    "width": 1280,
+    "height": 720
+  },
+
+  "notes": {
+    "environment.env_len_cm": "Full width == height of the SQUARE pushable environment on the table, cm. The sim env (2denv4) is 350x350 mesh units, so this sets the mesh-units-per-cm scale (350 / env_len_cm).",
+    "environment.env_x_cm": "Per-axis override of env_len_cm for the table-frame X extent; null -> use env_len_cm.",
+    "environment.env_y_cm": "Per-axis override for the table-frame Y extent; null -> use env_len_cm.",
+    "environment.offset_to_origin_cm": "Table-frame [x, y] cm of the environment CENTRE (== the sim's env_center), measured from the ID-10 corner marker: +x along the length, +y along the width. [0, 0] would put the env centre on the marker itself. Read by frame_conversions.py and push_t_demo_realworld.py.",
+    "environment.rotation_deg": "Rotation of the table frame relative to the sim frame, CCW degrees, applied ABOUT THE FIELD CENTRE (after offset_to_origin_cm is subtracted, before the normalization divide). 0 would mean table +x == sim +x; 180 -- the measured value -- means the sim axes run the other way: sim +x == table -x and sim +y == table -y. Headings pick up the same 180. Read by frame_conversions.py and push_t_demo_realworld.py.",
+    "aruco.dict": "OpenCV ArUco dictionary the markers are printed from.",
+    "aruco0_len_cm": "Physical side length of the ID-0 field markers (origin marker + the +x,-y corner marker), cm.",
+    "aruco.field_marker_id": "ArUco id carried by ALL THREE table field markers (origin, the one straight down from it, and the diagonal one).",
+    "aruco.origin_marker_yaw_deg": "Heading of the ID-10 origin marker's OWN +x edge (ArUco corner 0 -> corner 1), degrees CCW from table +x. The single-marker table frame is the marker's axes spun back by this, so it is what stops x and y coming out swapped when the marker is glued down turned. 90 = the marker's +x edge points along the width, toward where ID 20 is.",
+    "aruco.field_rect_cm": "[x_cm, y_cm] of the rectangle the three ID-0 field markers sit on, centre to centre. The origin marker is at (0, 0), the second straight down at (0, -y_cm), the third diagonally across at (+x_cm, -y_cm). Used by camera_test.py's Procrustes method as ground truth.",
+    "aruco.track_marker_id": "ArUco id of the small marker camera_calibrate.py tracks live relative to the origin.",
+    "aruco.tee_marker_id": "UNUSED, kept only so old configs still load. The shape carries FOUR markers now, not one, and which ids they are is frame_conversions.TEE_MARKER_IDS -- editing this changes nothing.",
+    "aruco.tee_marker_offset": "UNUSED, kept only so old configs still load. Where each marker sits on the shape is frame_conversions.TEE_MARKER_POS_CM, one (x_cm, y_cm) per id measured from the T's TOP-LEFT corner (+x right, -y down) -- editing this changes nothing.",
+    "robot.ip": "UR arm IP for ur_rtde.",
+    "robot.startpos_json": "Path (repo-relative) to arm_calibrate.py's output. Its 'point' (name 'p0') is the TCP pose + joints the UR reports with the end effector placed physically at the table ORIGIN marker. That pose is the table origin in base coordinates, its z is the push height, and its rotation vector is the tool orientation held at every waypoint. Every table-frame coordinate is an offset from p0 -- see RobotFrame.from_startpos.",
+    "robot.table_theta_deg": "Heading of table +x measured in the UR base frame, CCW degrees. A single calibration point cannot carry a rotation, so this stays a measured number (arm_calibrate.py's arrow-key frame). 0 = table axes already aligned with base axes.",
+    "robot.z_push_m": "Optional override of the tool-tip height for a push / transit, metres. null -> keep the z recorded in p0.",
+    "robot.workspace_box_m": "Jog/safety clamp box for arm_calibrate.py, UR base-frame metres. z lower bound keeps the pusher off the table.",
+    "camera.width": "RealSense colour width used by camera_calibrate.py / push_t_realworld_run.py.",
+    "camera.height": "RealSense colour height."
+  }
+}
