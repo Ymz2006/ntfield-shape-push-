@@ -1,0 +1,39 @@
+[run] #000  T=(  40.5,  42.8,+152)  |goal|= 30.1cm/118.1deg  ACTION 757 L=7 ref 0->10/219  push 1.4cm  TRANS
+[run] #001  T=(  42.7,  41.8,+157)  |goal|= 29.3cm/113.5deg  ACTION 727 L=7 ref 0->10/212  push 1.4cm  TRANS
+[run] #002  T=(  45.1,  40.6,+161)  |goal|= 28.6cm/109.5deg  ACTION 726 L=7 ref 0->10/192  push 1.4cm  TRANS
+[run] #003  T=(  47.5,  39.6,+168)  |goal|= 28.2cm/101.9deg  ACTION 700 L=7 ref 0->10/177  push 1.4cm  TRANS
+[run] #004  T=(  50.1,  38.7,+168)  |goal|= 28.4cm/101.9deg  ACTION 700 L=7 ref 0->10/172  push 1.4cm  TRANS
+[run] #005  T=(  52.9,  37.9,+168)  |goal|= 28.9cm/102.0deg  ACTION 399 L=7 ref 0->10/164  push 1.4cm  ARC r=10.2cm tight (no slide: faces 1/0)
+[run] #006  T=(  52.6,  37.3,+173)  |goal|= 28.1cm/96.7deg  ACTION 399 L=7 ref 0->10/161  push 1.4cm  ARC r=7.7cm tight (no slide: start behind face)
+[run] #007  T=(  52.3,  36.5,+178)  |goal|= 27.3cm/92.3deg  ACTION 399 L=7 ref 0->10/159  push 1.4cm  ARC r=7.7cm tight (no slide: start behind face)
+[run] #008  T=(  52.0,  35.8,-176)  |goal|= 26.6cm/86.4deg  ACTION 398 L=7 ref 0->10/148  push 1.4cm  ARC r=7.7cm tight (no slide: start behind face)
+[run] #009  T=(  51.6,  34.7,-171)  |goal|= 25.4cm/81.0deg  ACTION 392 L=7 ref 0->10/145  push 1.4cm  TRANS
+[run] #010  T=(  51.4,  33.8,-163)  |goal|= 24.5cm/72.9deg  ACTION 398 L=7 ref 0->10/140  push 1.4cm  ARC r=7.7cm tight (no slide: start behind face)
+[run] #011  T=(  51.3,  32.9,-159)  |goal|= 23.7cm/68.6deg  ACTION 395 L=7 ref 0->10/136  push 1.4cm  ARC r=10.2cm tight (no slide: start behind face)
+[run] #012  T=(  51.2,  31.6,-152)  |goal|= 22.6cm/61.8deg  ACTION 390 L=7 ref 0->10/128  push 1.4cm  TRANS
+[run] #013  T=(  51.4,  30.1,-144)  |goal|= 21.5cm/54.3deg  ACTION 340 L=7 ref 0->10/118  push 1.4cm  TRANS
+[run] #014  T=(  51.5,  28.6,-138)  |goal|= 20.3cm/47.8deg  ACTION 340 L=7 ref 0->10/108  push 1.4cm  TRANS
+[run] #015  T=(  51.5,  26.9,-128)  |goal|= 19.0cm/37.6deg  ACTION 160 L=7 ref 0->10/103  push 1.4cm  TRANS
+[run] #016  T=(  53.1,  25.9,-150)  |goal|= 19.5cm/60.4deg  ACTION 340 L=7 ref 0->10/102  push 1.4cm  TRANS
+[run] #017  T=(  52.3,  24.2,-139)  |goal|= 17.8cm/49.0deg  ACTION 1162 L=7 ref 0->10/93  push 1.4cm  ARC r=12.7cm tight (no slide: faces 0/4)
+[run] #018  T=(  50.1,  23.7,-141)  |goal|= 15.7cm/51.2deg  ACTION 1162 L=7 ref 0->10/84  push 1.4cm  ARC r=10.2cm tight (no slide: faces 3/4)
+[run] #019  T=(  47.6,  23.2,-142)  |goal|= 13.7cm/51.5deg  ACTION 340 L=7 ref 0->10/72  push 1.4cm  ARC r=10.2cm tight (no slide: faces 3/0)
+[run] #020  T=(  48.5,  22.0,-125)  |goal|= 13.4cm/35.2deg  ACTION 1162 L=7 ref 0->10/71  push 1.4cm  ARC r=10.2cm tight (no slide: faces 0/4)
+[run] #021  T=(  46.4,  20.5,-125)  |goal|= 10.8cm/35.2deg  ACTION 1162 L=7 ref 0->10/57  push 1.4cm  ARC r=10.2cm tight (no slide: faces 3/4)
+[run] #022  T=(  44.3,  19.5,-150)  |goal|=  8.7cm/60.3deg  ACTION 340 L=7 ref 0->10/46  push 1.4cm  ARC r=12.7cm tight (no slide: faces 3/0)
+[run] #023  T=(  44.6,  18.0,-134)  |goal|=  7.8cm/44.3deg  ACTION 1162 L=7 ref 0->10/41  push 1.4cm  ARC r=10.2cm tight (no slide: faces 0/4)
+[run] #024  T=(  42.3,  16.7,-132)  |goal|=  5.3cm/41.7deg  ACTION 1160 L=7 ref 0->10/27  push 1.4cm  TRANS
+[run] #025  T=(  40.0,  15.7,-144)  |goal|=  3.1cm/54.2deg  ACTION 360 L=7 ref 0->10/21  push 1.4cm  ARC r=12.7cm tight (no slide: faces 3/0)
+[run] #026  T=(  40.4,  14.0,-130)  |goal|=  2.0cm/40.0deg  ACTION 1258 L=7 ref 0->10/17  push 1.4cm  TRANS
+[run] #027  T=(  42.4,   9.8,-115)  |goal|=  4.7cm/25.4deg  ACTION 1378 L=7 ref 22->24/24  push 1.4cm  ARC r=10.2cm tight (no slide: faces 0/3)
+[run] #028  ENDGAME: within 5 cm / 7 deg of the goal pose -- every push from here on is cut to 0.50 of its length
+[run] #028  T=(  40.3,  10.5, -94)  |goal|=  2.7cm/ 3.9deg  ACTION 759 L=7 ref 0->10/14  push 0.7cm  ARC r=12.7cm tight (no slide: faces 4/1)
+[run] #029  T=(  40.7,  11.3, -75)  |goal|=  2.4cm/14.9deg  ACTION 559 L=7 ref 0->10/12  push 0.7cm  TRANS
+[run] #030  T=(  40.1,  12.3, -83)  |goal|=  1.4cm/ 7.0deg  ACTION 1431 L=7 ref 0->7/7  push 0.7cm  ARC r=10.2cm tight (no slide: faces 1/3)
+[run] #031  T=(  39.0,  12.9, -64)  |goal|=  0.2cm/26.5deg  ACTION 920 L=7 ref 11->11/11  push 0.7cm  ARC r=2.7cm tight (no slide: faces 4/2)
+[run] #032  T=(  38.8,  12.5, -87)  |goal|=  0.2cm/ 2.7deg  ACTION 919 L=7 ref 3->3/3  push 0.7cm  ARC r=7.7cm tight (no slide: faces 3/4)
+[run] #033  T=(  39.1,  12.5,-106)  |goal|=  0.4cm/16.1deg  ACTION 1580 L=7 ref 4->4/4  push 0.7cm  TRANS
+[run] #034  T=(  38.9,  12.6, -92)  |goal|=  0.1cm/ 2.0deg  ACTION 1580 L=7 ref 0->3/3  push 0.7cm  ARC r=7.7cm tight (no slide: faces 4/3)
+[run] #035  T=(  38.5,  12.6, -78)  |goal|=  0.3cm/12.1deg  ACTION 919 L=7 ref 3->4/4  push 0.7cm  TRANS
+[run] #036  T=(  38.9,  12.6, -98)  |goal|=  0.1cm/ 8.0deg  ACTION 1580 L=7 ref 1->1/1  push 0.7cm  TRANS
+[run] #037  T=(  38.6,  12.4, -84)  |goal|=  0.4cm/ 6.1deg  ACTION 919 L=7 ref 1->2/2  push 0.7cm  TRANS

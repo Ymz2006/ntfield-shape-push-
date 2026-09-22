@@ -1,6 +1,59 @@
 # ntrlshape_arm
 
-Eikonal-planner push-T, in sim and on a physical UR5 + RealSense table.
+Eikonal-planner pushing, in sim and on a physical UR5 + RealSense table.  Three shapes:
+the **T**, a **rectangle** and a **V**.
+
+## Which shape -- `--shape-name`
+
+Every entry point takes `--shape-name {T,rect,V}` (`T` by default, or `$NTRLSHAPE_SHAPE`):
+
+```
+python push_t_demo_sim.py      --shape-name V
+python push_t_realworld_run.py --shape-name rect --viz
+python locate_functions.py     --shape-name V
+python shapes.py                          # what all three resolve to, and what is missing
+```
+
+`shapes.py` is the registry and the only place a shape is described.  One entry carries
+its mesh, its z-up twin (optional), its test-set directory, its checkpoint, its goal pose,
+its ArUco marker positions and how much smaller the cardboard is than the mesh.
+Everything else about a shape -- the outline, the bounding box in centimetres, the area
+centroid, the thickness -- is **read off the mesh**, so there are no proportions to keep
+in step with the shape the checkpoint was trained on.  The size in centimetres is not even
+a free choice: the field is 350 mesh units across 70 cm, so a mesh unit is 2 mm and the
+T's 60-unit box *must* be built 12 cm across.
+
+Four directories hold the per-shape files:
+
+| where | what | whose frame |
+|---|---|---|
+| `datasets/3dshape/*.obj` | the mesh the checkpoint was **trained** on | defines the planner's pose frame; do not change |
+| `testing_data/3dshape/<shape>_env4/` | that checkpoint's test set — `meta.json`'s `env_scale` / `env_center`, and the planner's env/speed fields | must be built against `2denv4` |
+| `checkpoints/<shape>.pt` | the Eikonal checkpoint | pairs with the test set above |
+| `shapes/<shape>.obj` | the **real, manufactured** object, in millimetres | what the pusher touches — the IK footprint |
+
+Adding a shape is one dict entry in `shapes.SHAPES`, plus the things only you can supply:
+
+1. **the trained mesh** in `datasets/3dshape/`, and the **real** CAD `.obj` in `shapes/`;
+2. **a test set built against `2denv4`** — the env that is physically on the table, 350
+   units across the 70 cm field — in `testing_data/3dshape/`, and its **checkpoint** in
+   `checkpoints/`.  A dataset generated against any other env normalizes differently and
+   every planned pose lands somewhere else; `shapes.ShapeSpec.check()` says so at startup,
+   and every entry point prints it before touching the camera or the arm;
+3. **the goal pose** — `goal_pose_norm`, in the planner's normalized frame.  It is per
+   shape because a goal only means something for the shape it was chosen for;
+4. **the marker positions**, measured with a ruler (see *Measuring a marker in* below)
+   into that shape's `markers` dict.  An id left `None` is skipped, not guessed at, so
+   the stack runs on however many are filled in.
+
+`--shape-name` has to take effect before `frame_conversions` is imported -- that module
+bakes the shape's geometry into function default arguments, which bind at def time -- so
+each entry point peeks `sys.argv` for it at the top of the file (`shapes.select_from_argv`)
+and argparse then validates it.  Switching shapes mid-process raises rather than
+half-applying.
+
+`--ckpt`, `--data-path` and `--goal-norm` on `push_t_realworld_run.py` override that
+shape's registry entry for one run.
 
 ## Docker
 
@@ -30,12 +83,15 @@ in the image — see `Dockerfile`. The scripts do not run on the bare host.
 
 ## Simulation
 
-`push_t_demo_sim.py` — plan an SE(2) path for the T with the Eikonal planner, then push
-it there with a single cylindrical pusher using measured push primitives, closed-loop at
-the action level and (optionally) re-planned per action.
+`push_t_demo_sim.py` — plan an SE(2) path for the shape with the Eikonal planner, then
+push it there with a single cylindrical pusher using measured push primitives, closed-loop
+at the action level and (optionally) re-planned per action.  `--shape-name` sets `--env`,
+`--shape`, `--shape-zup`, `--dataPath` and `--ckpt` in one go; each is still overridable
+on its own.
 
 ```
 python push_t_demo_sim.py                        # viser at http://localhost:8080
+python push_t_demo_sim.py --shape-name V         # the V instead of the T
 python push_t_demo_sim.py --case 7 --port 8081
 python push_t_demo_sim.py --save-path plan.npy    # dump the planned T path and exit
 python push_t_demo_sim.py --traj plan.npy         # replay a saved path (no torch needed)
@@ -63,15 +119,20 @@ Frames:
 module, `camera_test_id10.py`, `locate_functions.py` and `arm_test_id10.py` cannot drift
 apart. `real_to_sim` / `sim_to_real` (+ the `_pose` twins) are `table_to_sim` /
 `sim_to_table` plus the one hop this file owns — normalized → pymunk mesh units,
-`* ENV_SCALE + ENV_CENTER`. `CALIB_OFFSET_X/Y` and `CALIB_ROTATION_DEG` are now aliases of
-`frame_conversions.FIELD_CENTER_CM` / `ROTATION_DEG`; all the numbers live in
-`real_world_params.json`.
+`* ENV_SCALE + ENV_CENTER`. Those two are read off the env mesh that is **on the table**
+(`shapes.env_norm(TABLE_ENV)`: longest plan extent, bounding-box centre — 350 about
+(12.747, 45.972) for `2denv4`), not off the shape's `meta.json`, so the table lands in the
+same place in sim units for every shape; a dataset built against that env records the
+same numbers, and `ShapeSpec.check()` flags one that does not. `CALIB_OFFSET_X/Y` and
+`CALIB_ROTATION_DEG` are now aliases of `frame_conversions.FIELD_CENTER_CM` /
+`ROTATION_DEG`; all the numbers live in `real_world_params.json`.
 
-The plan's two ends: **goal** is the module constant `GOAL_POSE_NORM`, written in the
-planner's **normalized** frame — `(x, y, rz)` or the full `(x, y, z, rx, ry, rz)`, with
+The plan's two ends: **goal** is `GOAL_POSE_NORM` — an alias for the active shape's
+`shapes.SHAPES[...].goal_pose_norm`, since a goal pose only means anything for the shape
+it was chosen for — written in the planner's **normalized** frame — `(x, y, rz)` or the full `(x, y, z, rx, ry, rz)`, with
 `x, y` in the env's `[-0.5, 0.5]²` box (`(0,0)` = env centre) and `rz` in **turns**
-(`0.25` = 90°), i.e. the same numbers as the test set's `sampled_points.npy`. Edit it to
-move the target; `Geometry.goal_pose_real()` / `PushStack.goal_real()` read it back in
+(`0.25` = 90°), i.e. the same numbers as the test set's `sampled_points.npy`. Edit that
+shape's entry to move the target, or pass `--goal-norm X Y TURNS` for one run; `Geometry.goal_pose_real()` / `PushStack.goal_real()` read it back in
 table cm. **Start** is always the shape's measured pose, in table cm, passed in as
 `build_stack(start_pose_real=(x_cm, y_cm, theta_rad))` (`push_t_realworld_run.py` opens
 the camera and reads the T before planning). The checkpoint's `--case` test-set pair sets
@@ -195,28 +256,60 @@ off, `obs['tee_ids_seen']` / `['tee_ids_blocked']` what the frame had to offer.
 **Measuring a marker in** — two numbers with a ruler. Hold the T the way it reads in text
 (crossbar on top, stem hanging down) and measure each marker's centre **from the top-left
 corner** of its 12 × 12 cm bounding box: `x` right along the top edge, `y` **downward and
-therefore negative**. That pair is the whole entry in `frame_conversions.TEE_MARKER_POS_CM`:
+therefore negative**. That pair is the whole entry in that shape's `markers` dict in `shapes.py`
+(`frame_conversions.TEE_MARKER_POS_CM` is the active shape's copy of it):
 
 ```python
-TEE_MARKER_POS_CM = {
-    # id: (x_cm, y_cm) -- marker centre, from the T's TOP-LEFT corner, +x right, -y down
-    1: (6.0, -1.2),     # centred on the crossbar, 1.2 cm down
-    2: None,            # <-- (x_cm, y_cm)
-    3: None,
-    4: None,
-}
+# shapes.py
+"T": ShapeSpec(
+    ...
+    # id: (x_cm, y_cm) -- marker centre, from the TOP-LEFT corner, +x right, -y down
+    markers={1: (5.5, -0.7), 2: (1.6, -0.7), 3: (9.8, -0.7), 4: (5.5, -10.3)},
+),
+"rect": ShapeSpec(
+    ...
+    real_rot_deg=90.0,          # the CAD part is landscape; the pipeline holds it portrait
+    marker_frame="real",        # rows below are read off the 4.5 x 11.0 cm real part
+    markers={1: (2.25, -8.75), 2: (2.25, -2.25)},   # centre line, half a width in from
+    marker_yaw_deg=0.0,                             # each end; stuck on square
+),
+"V": ShapeSpec(
+    ...
+    real_rot_deg=245.0,         # the only turn carrying BOTH arm directions onto the mesh
+    marker_frame="real",
+    # (x_cm, y_cm, yaw_deg) -- a THIRD element gives that marker its own mount angle,
+    # which the V needs: each faces along its own arm's outward normal, so they differ.
+    markers={1: (9.245, -1.150, 270.0),     # right arm (outward +90), facing   +0
+             2: (1.528, -6.067, 155.0)},    # left arm  (outward +155), facing -115
+),
 ```
+
+**Which box are you measuring in?**  `marker_frame` on the shape's entry says so:
+`"real"` means the rows are read off `shapes/<shape>.obj`, the manufactured part (turned
+by `real_rot_deg` into the orientation the pipeline holds the shape in) — use this for
+anything measured from now on.  `"trained"` is the old behaviour, the nominal box of the
+mesh in `datasets/3dshape/`; the T's four rows were taken that way, against a nominal
+12 × 12 box, and are left on it.  The difference is not cosmetic: measuring the rectangle
+in the trained mesh's 3.0 × 12.0 box instead of the real 4.5 × 11.0 would put both its
+markers 0.75 cm off the centre line on every frame.
+
+`marker_nominal_from_top_cm` is the *designed* spot for the lowest id — centred, that far
+down — which the self-test holds the measured row against.  Only the T has one; leave it
+`None` for a shape whose markers went wherever they fit, and the test is skipped rather
+than reporting a false slip.
 
 `tee_marker_offset` does the rest — the top-left→body translation, the centroid arithmetic,
 and the mount turn, which is **not** in the table because all four markers are glued on the
 same way round and share the one `MARKER_YAW_ON_TEE_DEG`. Switching `--center` between the
-centroid and the bbox middle needs no re-measuring. A position that does not land on the T's
-material is **rejected with the reason** rather than believed, so a dropped minus sign, an
+centroid and the bbox middle needs no re-measuring. A position that does not land on the shape's
+material — tested against the **mesh outline**, so the V's opening and the T's notches
+are both handled — is **rejected with the reason** rather than believed, so a dropped minus sign, an
 `x` past an edge, or `x`/`y` swapped shows up at startup instead of biasing every frame
 (tolerance `MARKER_ON_TEE_TOL_CM`, 6 mm, so a marker glued right up to an edge still passes).
 An id left as `None` is **skipped, not guessed at**, so the stack runs on however many rows
-are filled in; `python locate_functions.py` and `python frame_conversions.py` both print
-which those are, alongside the body-frame and offset numbers they convert to.
+are filled in; `python shapes.py`, `python locate_functions.py` and
+`python frame_conversions.py` all print which those are, alongside the body-frame and
+offset numbers they convert to.
 
 ```
 # no hardware — exercises homing, the step loop, the live view
@@ -286,7 +379,10 @@ view.update(shape=(x, y, th), robot=(rx, ry), reference=stack.reference_real())
 
 - `camera_test_id10.py` — live RealSense + ArUco window; defines the table frame off the
   single **ID-10** corner marker and reports what one marker can and cannot tell you.
-- `locate_functions.py` — where the T is, live, in table cm (viser); `locate_shape` is the
+- `shapes.py` — the shape registry: `python shapes.py` resolves all three and reports a
+  missing mesh, a missing checkpoint, a dataset built against the wrong env, or a marker
+  measured off the shape.
+- `locate_functions.py` — where the shape is, live, in table cm (viser); `locate_shape` is the
   one measurement the real-world loop consumes.
 - `arm_test_id10.py` — click the table, the arm goes there; the reference for table→base.
 - `arm_calibrate.py` — jog the arm and record **p0**, the TCP pose with the end effector on
@@ -297,4 +393,9 @@ view.update(shape=(x, y, th), robot=(rx, ry), reference=stack.reference_real())
 
 
 
-python push_t_realworld_run.py --viz --blend 0.01 --transit-accel 1.0 --transit-speed 200
+python push_t_realworld_run.py --viz --blend 0.01 --transit-accel 1.0 --transit-speed 200 --push-len 10 --no_trans_collision
+
+
+IMPORTANT
+
+edge_lift

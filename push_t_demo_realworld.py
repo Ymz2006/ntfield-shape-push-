@@ -58,20 +58,36 @@ The mapping goes through the planner's normalized frame so it matches
 ``CALIB_OFFSET`` is the table-frame centimetres of the environment *centre* (the
 sim's ``env_center``); ``ENV_X`` / ``ENV_Y`` are the real env's full width / height
 in centimetres -- the physical size of the box the planner normalizes to
-``[-0.5, 0.5]^2``.  ``ENV_SCALE`` / ``ENV_CENTER`` come from the same ``meta.json``
-``load_geometry`` reads.  Heading is only rotated + offset, never divided by the env
-size -- the (x, y) -> turns normalization stays inside ``world_to_planner``.
+``[-0.5, 0.5]^2``.  ``ENV_SCALE`` / ``ENV_CENTER`` are read off the env mesh that is ON
+THE TABLE (``shapes.env_norm``), so the table sits in the same place in sim units for
+every shape, and ``load_geometry`` hands the planner that SAME pair rather than a
+dataset's own ``meta.json`` copy: the environment is one physical thing the rig pushes
+every shape around, not a per-shape quantity, so selecting a shape changes its mesh,
+contacts and IK footprint and nothing about the environment's normalization.  A
+dataset whose ``meta.json`` disagrees was generated against a different environment
+(``ShapeSpec.check`` reports it) and needs rebuilding, not a special-cased scale here.
+Heading is only rotated + offset, never divided by the env size -- the (x, y) -> turns
+normalization stays inside ``world_to_planner``.
 """
 
 from __future__ import annotations
 
 import argparse
-import json
 import math
 import os
 from dataclasses import dataclass, field
 
 import numpy as np
+
+import shapes
+
+# Run as a script, ``--shape-name`` has to be honoured BEFORE ``frame_conversions`` is
+# imported: that module bakes the shape's proportions into its functions' default
+# arguments, which bind at def time, so a selection made any later is half-applied.
+# Imported as a library it is the entry point's job (``push_t_realworld_run.py`` calls
+# ``shapes.select_from_argv()`` ahead of its own imports), which is why this is guarded.
+if __name__ == '__main__':
+    shapes.select_from_argv()
 
 import frame_conversions as FC
 import pymunk_viser_push as base
@@ -103,30 +119,26 @@ from push_t_demo_sim import (
 # ======================================================================================
 # calibration
 # ======================================================================================
-# The dataset whose meta.json defines the sim env; must match make_args()' dataPath.
-_ENV_DATA_PATH = './testing_data/3dshape/Tshape3d_env4'
+# WHICH SHAPE the rig is pushing -- ``shapes.active()``, set by ``--shape-name`` before
+# this module is imported (see ``shapes.select_from_argv``).  Everything below that used
+# to name the T by hand -- the mesh, the dataset, the checkpoint, the goal, the trim off
+# the footprint -- reads it from here, so the same stack drives the T, the rectangle and
+# the V with no other change.  ``frame_conversions`` resolved the same object, so the two
+# cannot disagree.
+SHAPE = shapes.active()
+
+# The dataset whose meta.json the planner normalizes with; must match make_args()' dataPath.
+_ENV_DATA_PATH = SHAPE.data_path
 
 
-def _load_env_meta(data_path=_ENV_DATA_PATH):
-    """``(env_scale, env_center_xy)`` from ``<data_path>/meta.json``.
-
-    The planner normalizes sim world coordinates as ``(p - env_center) / env_scale``
-    (see ``push_t_demo_sim.world_to_planner``); these are the two constants that frame.
-    Falls back to ``(1.0, (0, 0))`` -- an identity normalization -- when the file is
-    absent, so the module still imports without the dataset.
-    """
-    try:
-        import json
-
-        with open(os.path.join(data_path, 'meta.json')) as f:
-            m = json.load(f)
-        return float(m['env_scale']), np.asarray(m['env_center'], dtype=float)[:2]
-    except (OSError, KeyError, ValueError, TypeError):
-        return 1.0, np.zeros(2, dtype=float)
-
-
-# Sim env normalization, read once from meta.json (same source as ``load_geometry``).
-ENV_SCALE, ENV_CENTER = _load_env_meta()
+# The env's own normalization: read off the env mesh that is on the table, NOT off any
+# shape's dataset.  It is the SAME for every shape -- one physical table, pushed around by
+# whichever shape is selected -- and ``load_geometry`` hands the planner this same pair
+# rather than a dataset's ``meta.json`` copy.  For a dataset generated against that env the
+# two agree exactly (the T's meta.json says 350 about (12.747, 45.972), and so does
+# 2denv4.obj); a dataset that disagrees was generated against a different environment
+# (``ShapeSpec.check`` reports it) and needs rebuilding, not a per-shape scale here.
+ENV_SCALE, ENV_CENTER = SHAPE.table_env_scale(), SHAPE.table_env_center()
 
 # The table <-> normalized calibration is NOT owned here: ``frame_conversions`` owns every
 # frame hop in the rig, and ``camera_test_id10`` / ``locate_functions`` / ``arm_test_id10``
@@ -162,7 +174,13 @@ CALIB_ROTATION_DEG = FC.ROTATION_DEG
 # always the shape's MEASURED pose, passed to ``build_stack(start_pose_real=...)`` -- so
 # the reference is planned from wherever the T actually is to here.  The checkpoint's
 # ``--case`` test-set pair no longer sets either end.
-GOAL_POSE_NORM = (-0.35, 0.0 ,0.0)
+#
+# It is PER SHAPE, and lives in ``shapes.SHAPES[...].goal_pose_norm``: a goal pose only
+# means something for the shape it was chosen for -- a heading that stands the T upright
+# says nothing about where a V should come to rest -- so edit it there, next to that
+# shape's mesh and dataset, rather than here.  This name is the active shape's, so
+# everything that already read it follows ``--shape-name`` automatically.
+GOAL_POSE_NORM = tuple(SHAPE.goal_pose_norm)
 
 
 def goal_pose_norm(goal=None):
@@ -315,7 +333,7 @@ def path_sim_to_real(path):
 # aims at.  On the table that circle is what has to clear the real shape rather than the
 # footprint the planner carries, so it is grown by this much here; the sim keeps its own
 # 8 units.  Everything else about the ladder is unchanged.
-STANDOFF_EXTRA_CM = 8.0
+STANDOFF_EXTRA_CM = 12
 
 # Margin added to the transit radius the ladder settles on, centimetres.  ``plan_transit``
 # walks ``ctrl.radii`` tightest first and stops at the first circle that comes back clear,
@@ -323,7 +341,7 @@ STANDOFF_EXTRA_CM = 8.0
 # footprint the simulator knows exactly, optimistic against a cardboard T seen through a
 # camera.  The chosen rung is re-flown this much wider and the wider one is kept when it
 # is clear too, with the verified tight arc as the fallback.
-ARC_CLEARANCE_CM = 3.0
+ARC_CLEARANCE_CM = 12
 
 # Air gap the transit keeps between the pusher RIM and the shape's footprint, in
 # centimetres of ``clearance``.  This is the one keep-out knob that was left at the sim's
@@ -372,9 +390,15 @@ TRANSIT_CLEARANCE_CM = 2.0
 # an action that overshoots costs more than one that falls short -- and the loop is
 # closed, re-observing the T after every action, so the residual is simply picked up by
 # the next one.  It does mean more actions to converge.
-ENDGAME_DIST_CM = 3.0
-ENDGAME_DEG = 5.0
-ENDGAME_PUSH_SCALE = 1.0 / 3.0
+#
+# The endgame LATCHES: once both tests have passed on any observation, every push for the
+# rest of the run is cut, whether or not the T is still inside the band.  A short push
+# that knocks the T a hair out of the band must not be followed by a full-length one --
+# that is the overshoot the shrink exists to prevent, and it was exactly what happened
+# when the test was re-run every step.  ``ArmPushSession.endgame`` is the latch.
+ENDGAME_DIST_CM = 5.0
+ENDGAME_DEG = 7.0
+ENDGAME_PUSH_SCALE = 1.0 / 2.0
 
 # Diameter of the real pusher tip, centimetres -- the 3 cm disc on the end effector.
 # ``pusher_radius`` below is this in sim mesh units; the sim's own default is 5.0 units
@@ -386,12 +410,13 @@ PUSHER_DIAMETER_CM = 3.0
 # reads, with the same defaults.  Kept as a plain dict so make_args() can splat it.
 _DEFAULTS = dict(
     # geometry / planner
-    env='datasets/3dshape/2denv4.obj',
-    shape='datasets/3dshape/Tshape3d.obj',
-    shape_zup='datasets/3dshape/Tshape3d_zup.obj',
+    env=SHAPE.env,
+    shape=SHAPE.mesh,
+    shape_zup=SHAPE.mesh_zup,            # None for a shape with no z-up twin: the same
+                                         # bounding box then comes off ``shape`` itself
     dataPath=_ENV_DATA_PATH,
     modelPath='./Experiments/3dshape',
-    ckpt='./latest.pt',
+    ckpt=SHAPE.ckpt,
     case=0,                              # unused: the ends are the shape + GOAL_POSE_NORM
     traj=None,                           # sim-only knobs, kept so the bag matches
     save_path=None,                      # build_args key for key -- nothing here reads them
@@ -407,7 +432,7 @@ _DEFAULTS = dict(
     pusher_speed=20.0,
     tee_mass=1.0,
     friction=300.0,
-    spin_friction=8000.0,
+    spin_friction=1000.0,
     # base.Sim reads this, and PushPrimitives.calibrate builds one PushSim per primitive,
     # so it has to be here even though nothing on the arm has obstacles that move.
     dynamic_obstacles=False,
@@ -470,9 +495,9 @@ _DEFAULTS = dict(
     endgame_deg=ENDGAME_DEG,
     endgame_scale=ENDGAME_PUSH_SCALE,
     len_bias=0.02,
-    n_contacts=100,                      # --n-contacts 100
-    n_dirs=30,                           # --n-dirs 10
-    dir_spread=25.0,
+    n_contacts=80,                      # --n-contacts 100
+    n_dirs=20,                           # --n-dirs 10
+    dir_spread=40.0,
     corner_margin=None,                  # None -> CONTACT_CORNER_MARGIN_CM, in world units
     action_timeout=4.0,
 )
@@ -486,7 +511,55 @@ _DEFAULTS = dict(
 # crossbar and the 2 cm bottom of the stem entirely (both ends of a 2 cm face are inside
 # 1.5 cm of a corner), leaving 27 of the 48 cm perimeter -- the long faces, shortened --
 # to sample from.  Lower it if the controller needs to push on those small faces.
-CONTACT_CORNER_MARGIN_CM = 1.0
+CONTACT_CORNER_MARGIN_CM = 0.8
+
+# The shape on the table is SMALLER than its mesh -- cardboard cut by hand always is.
+# On the T the crossbar is 0.5 cm shorter at each end and the stem 1 cm shorter at the
+# bottom (the thickness is unchanged).  The planner keeps the MESH shape -- that is what
+# the network was trained on and what ``bbox_to_centroid`` / the goal are expressed
+# against -- but the contacts the IK samples have to sit on the cardboard that is
+# actually there, or the pusher stops 0.5 cm short of the bar ends and a full 1 cm short
+# of the stem.  So the footprint handed to ``PushIK`` (and to the primitive calibration,
+# which strikes those same contacts) is the mesh footprint clipped to a box this much
+# smaller: everything outside the box is cut off, nothing is re-centred, so the body
+# origin stays the mesh centroid that the camera reports.
+#
+# The trim is PER SHAPE and lives in ``shapes.SHAPES[...].ik_trim_cm`` as
+# ``(x_lo, y_lo, x_hi, y_hi)`` in the shape's body frame -- measure your cardboard
+# against the mesh and put the difference there.  All zeros samples the mesh shape
+# itself, which is the right starting point for a shape that has not been measured yet.
+IK_TRIM_CM = tuple(float(v) for v in SHAPE.ik_trim_cm)
+# Back-compat names for the T's two numbers, which is what this file used to carry.
+IK_TRIM_BAR_END_CM = IK_TRIM_CM[0]     # off EACH end of the crossbar (x, both sides)
+IK_TRIM_STEM_END_CM = IK_TRIM_CM[1]    # off the bottom of the stem (-y, pointing down)
+
+
+def ik_footprint(tee_poly, trim_cm=None):
+    """``tee_poly`` clipped to the real cardboard: the box-cut described at ``IK_TRIM_CM``.
+
+    ``trim_cm`` is ``(x_lo, y_lo, x_hi, y_hi)`` centimetres taken off each side of the
+    footprint's bounding box, in the shape's own body frame (+x right, +y up).  For the T,
+    whose crossbar runs along x at the TOP and whose stem points DOWN as ``Tshape3d.obj``
+    maps through ``MESH_TO_WORLD``, that is ``(bar_end, stem_end, bar_end, 0)`` -- the top
+    edge kept, both x extremes brought in, the bottom raised.
+
+    Returns the same polygon when every trim is zero.
+    """
+    from shapely.geometry import box
+
+    t = IK_TRIM_CM if trim_cm is None else tuple(float(v) for v in trim_cm)
+    if len(t) != 4:
+        raise ValueError(f'ik trim must be (x_lo, y_lo, x_hi, y_hi) cm, got {t}')
+    if max(t) <= 0.0:
+        return tee_poly
+    k = sim_units_per_cm()
+    x0, y0, x1, y1 = tee_poly.bounds
+    clipped = tee_poly.intersection(box(x0 + t[0] * k, y0 + t[1] * k,
+                                        x1 - t[2] * k, y1 - t[3] * k))
+    if clipped.geom_type != 'Polygon' or clipped.is_empty:
+        raise ValueError(f'IK footprint trim {t} cm leaves {clipped.geom_type}, not one '
+                         f'polygon -- too much has been cut off {SHAPE.name}')
+    return clipped
 
 
 def make_args(**overrides):
@@ -529,12 +602,13 @@ class PushStack:
     ref: np.ndarray                       # world-frame (T,3) SE(2) reference path
     obstacles: list
     env_polys: list
-    tee_poly: object
+    tee_poly: object                      # the planner's T (mesh footprint)
     tee_height: float
     bbox_to_centroid: np.ndarray
     env_scale: float = 1.0
     env_center: tuple = (0.0, 0.0, 0.0)
     replanner: Replanner | None = None
+    ik_poly: object = None                # the smaller T the contacts were sampled on
     push_len: float = 0.0
     push_lens: list = field(default_factory=list)
     goal_norm: np.ndarray | None = None   # planner-frame (6,) goal; None with a raw ref=
@@ -570,6 +644,7 @@ class Geometry:
     bbox_to_centroid: np.ndarray
     env_scale: float = 1.0
     env_center: tuple = (0.0, 0.0, 0.0)
+    ik_poly: object = None                # ``ik_footprint(tee_poly)``: the real, smaller T
 
     def goal_pose_real(self, goal=None):
         """``GOAL_POSE_NORM`` (or ``goal``) in table cm ``(x, y, theta rad)``."""
@@ -601,8 +676,11 @@ class Geometry:
 def load_geometry(args=None):
     """Meshes + footprints + planner-frame constants -- the torch-free part of the stack.
 
-    Reads ``meta.json`` for ``env_scale`` / ``env_center`` when it is there (needed for
-    the normalized frame); leaves them identity otherwise.
+    ``env_scale`` / ``env_center`` are ``ENV_SCALE`` / ``ENV_CENTER`` -- the table's OWN
+    normalization, the same for every shape -- not the dataset's ``meta.json`` copy:
+    selecting a shape changes its mesh, contacts and IK footprint, never the environment.
+    A dataset whose ``meta.json`` disagrees is a mismatched dataset (``ShapeSpec.check``
+    reports it), not a second, shape-specific environment to plan against.
     """
     from shapely.geometry import Polygon
 
@@ -616,29 +694,30 @@ def load_geometry(args=None):
 
     c = tee_polys[0].centroid
     z0 = tee_mesh.bounds[0][2]
+    # Read the bounding box BEFORE re-centring on the centroid -- ``bbox_to_centroid``
+    # below is the gap between the two, so it needs the mesh as authored.
+    mesh_bbox_c = 0.5 * (np.asarray(tee_mesh.bounds[0]) + np.asarray(tee_mesh.bounds[1]))
     tee_mesh.apply_translation([-c.x, -c.y, -z0])
     tee_poly = Polygon([(x - c.x, y - c.y) for x, y in tee_polys[0].exterior.coords])
     tee_height = float(tee_mesh.extents[2])
 
-    # The planner poses the shape about the z-up mesh's bounding-box centre.
-    Vz = np.array([[float(t) for t in ln.split()[1:4]]
-                   for ln in open(args.shape_zup) if ln.startswith('v ')])
-    bbox_c = 0.5 * (Vz.min(0) + Vz.max(0))
+    # The planner poses the shape about the z-up mesh's bounding-box centre.  Only the T
+    # ships a z-up twin; for anything else the same box comes off ``args.shape`` itself,
+    # which is exact because ``MESH_TO_WORLD`` IS the y-up -> z-up rotation (checked on
+    # the T: both routes give (-2.5, 0)).
+    if args.shape_zup and os.path.exists(args.shape_zup):
+        Vz = np.array([[float(t) for t in ln.split()[1:4]]
+                       for ln in open(args.shape_zup) if ln.startswith('v ')])
+        bbox_c = 0.5 * (Vz.min(0) + Vz.max(0))
+    else:
+        bbox_c = mesh_bbox_c                     # MESH_TO_WORLD'd, pre-recentring
     bbox_to_centroid = np.array([c.x - bbox_c[0], c.y - bbox_c[1]])
-
-    env_scale, env_center = 1.0, (0.0, 0.0, 0.0)
-    meta_path = os.path.join(args.dataPath, 'meta.json')
-    if os.path.exists(meta_path):
-        import json
-
-        with open(meta_path) as f:
-            meta = json.load(f)
-        env_scale, env_center = meta['env_scale'], tuple(meta['env_center'])
 
     return Geometry(args=args, env_mesh=env_mesh, tee_mesh=tee_mesh, env_polys=env_polys,
                     tee_poly=tee_poly, tee_height=tee_height,
                     bbox_to_centroid=bbox_to_centroid,
-                    env_scale=env_scale, env_center=env_center)
+                    env_scale=ENV_SCALE, env_center=(*ENV_CENTER, 0.0),
+                    ik_poly=ik_footprint(tee_poly))
 
 
 def load_womodel(args):
@@ -677,7 +756,7 @@ def build_stack(args=None, ref=None, start_pose_real=None, goal=None):
 
     geo = load_geometry(args)
     env_mesh, tee_mesh = geo.env_mesh, geo.tee_mesh
-    env_polys, tee_poly = geo.env_polys, geo.tee_poly
+    env_polys, tee_poly, ik_poly = geo.env_polys, geo.tee_poly, geo.ik_poly
     tee_height, bbox_to_centroid = geo.tee_height, geo.bbox_to_centroid
     env_scale, env_center = geo.env_scale, geo.env_center
 
@@ -700,7 +779,17 @@ def build_stack(args=None, ref=None, start_pose_real=None, goal=None):
 
     # c is read off the simulator's friction anisotropy, not tuned separately.
     c_len = args.c_length if args.c_length else args.spin_friction / args.friction
-    ik = PushIK(tee_poly, c_len, n_boundary=args.n_boundary)
+    # Contacts are struck off the REAL T (``ik_footprint``), not the planner's mesh T;
+    # the controller's keep-outs and stand-off circle follow from the same points.
+    ik = PushIK(ik_poly, c_len, n_boundary=args.n_boundary)
+    if ik_poly is not tee_poly:
+        k = sim_units_per_cm()
+        bx0, by0, bx1, by1 = tee_poly.bounds
+        ix0, iy0, ix1, iy1 = ik_poly.bounds
+        print(f'[ik] contacts sampled on the trimmed T: {(ix1 - ix0) / k:.1f} x '
+              f'{(iy1 - iy0) / k:.1f} cm (mesh {(bx1 - bx0) / k:.1f} x {(by1 - by0) / k:.1f}'
+              f' cm; {IK_TRIM_BAR_END_CM:g} cm off each bar end, {IK_TRIM_STEM_END_CM:g} '
+              f'cm off the stem bottom); planner still uses the mesh T')
 
     obstacles = list(env_polys)          # wall ring + interior blocks, all solid
     ctrl = PushController(ik, ref, args, obstacles)
@@ -715,7 +804,10 @@ def build_stack(args=None, ref=None, start_pose_real=None, goal=None):
           f'{prims.corner_margin:.1f} units '
           f'= {prims.corner_margin / max(sim_units_per_cm(), 1e-9):.1f} cm '
           f'({prims.n_boundary_kept}/{len(ik.P)} boundary samples eligible)')
-    prims.calibrate(args, tee_poly, push_lens,
+    # Measured against the same trimmed T the contacts sit on (a contact on the trimmed
+    # bar end would be INSIDE the mesh T).  The cache key hashes the contacts, so a table
+    # built for the mesh T is not reused.
+    prims.calibrate(args, ik_poly, push_lens,
                     cache_dir=os.path.dirname(args.dataPath) or '.')
 
     rep = None
@@ -727,7 +819,8 @@ def build_stack(args=None, ref=None, start_pose_real=None, goal=None):
                      obstacles=obstacles, env_polys=env_polys, tee_poly=tee_poly,
                      tee_height=tee_height, bbox_to_centroid=bbox_to_centroid,
                      env_scale=env_scale, env_center=env_center, replanner=rep,
-                     push_len=push_len, push_lens=push_lens, goal_norm=goal_norm)
+                     push_len=push_len, push_lens=push_lens, goal_norm=goal_norm,
+                     ik_poly=ik_poly)
 
 
 # ======================================================================================
@@ -1067,6 +1160,7 @@ class StepPlan:
     transit_radius: float | None = None
     transit_widened: bool = False                   # arc flew the --arc-clearance margin
     edge_blocked: bool = False                      # an arc a same-face slide was possible for
+    edge_skip: str | None = None                    # why no slide was possible (ctrl.edge_skip)
     transit_world: list = field(default_factory=list)
     push_target_world: np.ndarray | None = None
     waypoints_world: list = field(default_factory=list)
@@ -1102,6 +1196,7 @@ class ArmPushSession:
         self.push_len = stack.push_len
         self.robot = robot_frame          # table cm -> UR base frame; None = no conversion
         self.n_actions = 0
+        self.endgame = False              # latched by endgame_scale(); never cleared
 
     # -- initial move: park the end effector on the stand-off circle ------------------
     def home_pose_world(self, tee_pose_world):
@@ -1203,9 +1298,10 @@ class ArmPushSession:
               -> normalized pose (about the z-up bbox centre, / env_scale)
 
         Pass the T pose EITHER in table centimetres (``tee_pose_real``) OR already in sim
-        world units (``tee_pose_world``); exactly one.  Needs ``env_scale`` / ``env_center``
-        from ``meta.json``, so it only means anything when the stack was built with a
-        planned reference (not a bare ``--ref`` array).
+        world units (``tee_pose_world``); exactly one.  Needs ``self.stack.bbox_to_centroid``
+        (the shape's own mesh geometry), so it only means anything when the stack was built
+        with a planned reference (not a bare ``--ref`` array); ``env_scale`` / ``env_center``
+        themselves are always the table's, not per-shape.
         """
         if (tee_pose_real is None) == (tee_pose_world is None):
             raise ValueError('pass exactly one of tee_pose_real / tee_pose_world')
@@ -1217,7 +1313,7 @@ class ArmPushSession:
 
     # -- endgame ---------------------------------------------------------------------
     def endgame_scale(self, tee_pos_world, tee_ang):
-        """``args.endgame_scale`` when the T is nearly there, else ``1.0``.
+        """``args.endgame_scale`` once the T has been nearly there, else ``1.0``.
 
         The knobs come off the parameter bag (``ENDGAME_*`` are only their defaults), so a
         run can turn the shrink off with ``--endgame-scale 1.0`` and get one push length
@@ -1234,17 +1330,24 @@ class ArmPushSession:
         Measured against ``ctrl.ref[-1]`` rather than the reference the stack was built
         with, so a replan that moves the path still ends at the pose actually being
         tracked.
+
+        And it LATCHES (``self.endgame``): the first observation that passes both tests
+        puts the session in the endgame for good, and every push after it is cut whether
+        or not the T is still inside the band.  Otherwise a short push that nudges the T
+        just outside the band is followed by a full-length one that throws it back out --
+        the very overshoot the shrink is for.
         """
         scale = float(getattr(self.args, 'endgame_scale', ENDGAME_PUSH_SCALE))
         if scale >= 1.0:                     # switched off: one push length for every case
             return 1.0
-        goal = np.asarray(self.ctrl.ref[-1], dtype=float)
-        d_cm = float(np.linalg.norm(goal[:2] - np.asarray(tee_pos_world, dtype=float)[:2])
-                     / max(sim_units_per_cm(), 1e-9))
-        d_deg = abs(math.degrees(wrap(float(goal[2]) - float(tee_ang))))
-        near = (d_cm <= float(getattr(self.args, 'endgame_dist_cm', ENDGAME_DIST_CM))
-                and d_deg <= float(getattr(self.args, 'endgame_deg', ENDGAME_DEG)))
-        return scale if near else 1.0
+        if not self.endgame:
+            goal = np.asarray(self.ctrl.ref[-1], dtype=float)
+            d_cm = float(np.linalg.norm(goal[:2] - np.asarray(tee_pos_world, dtype=float)[:2])
+                         / max(sim_units_per_cm(), 1e-9))
+            d_deg = abs(math.degrees(wrap(float(goal[2]) - float(tee_ang))))
+            self.endgame = (d_cm <= float(getattr(self.args, 'endgame_dist_cm', ENDGAME_DIST_CM))
+                            and d_deg <= float(getattr(self.args, 'endgame_deg', ENDGAME_DEG)))
+        return scale if self.endgame else 1.0
 
     def _shrink_endgame_push(self, pos, ang):
         """Cut the push the controller just chose to ``endgame_scale`` of its length.
@@ -1347,6 +1450,7 @@ class ArmPushSession:
             transit_radius=transit_radius,
             transit_widened=bool(getattr(self.ctrl, 'transit_widened', False)),
             edge_blocked=bool(getattr(self.ctrl, 'edge_blocked', False)),
+            edge_skip=getattr(self.ctrl, 'edge_skip', None),
             transit_world=transit_world,
             push_target_world=push_target_world,
             waypoints_world=waypoints_world,
@@ -1372,6 +1476,7 @@ class ArmPushSession:
 def build_cli():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
+    shapes.add_shape_argument(ap)
     ap.add_argument('--linear-interp', action='store_true', default=True,
                     help='the only transit mode here: the arm FLIES each transit '
                          '(retract -> arc/slide -> re-enter) and is never teleported. '
@@ -1389,6 +1494,9 @@ def build_cli():
 
 def main():
     cli = build_cli()
+    print(SHAPE.describe())
+    for problem in SHAPE.check():
+        print(f'[realworld] !! {problem}')
     args = make_args(plan_device=cli.plan_device, no_replan=cli.no_replan)
     ref = np.load(cli.ref) if cli.ref else None
     sx, sy, sdeg = cli.start

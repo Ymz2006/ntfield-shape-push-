@@ -60,7 +60,6 @@ Usage (from the ntrl-demo root):
 
 import argparse
 import hashlib
-import json
 import math
 import os
 import sys
@@ -70,6 +69,16 @@ import numpy as np
 
 sys.path.append('.')
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
+import shapes
+
+# Run as a script, ``--shape-name`` has to be applied before build_args() reads the
+# active shape for its path defaults -- and before anything imports frame_conversions,
+# which bakes the shape's proportions into its functions' default arguments.  Imported
+# as a library (push_t_demo_realworld does) the entry point has already done it, which
+# is why this is guarded.
+if __name__ == '__main__':
+    shapes.select_from_argv()
 
 import pymunk
 import trimesh
@@ -631,6 +640,12 @@ class PushController:
         # Only ever True on an arc; a slide that was flown is ``transit_kind == 'edge'``.
         # Nothing plans off it, it is there so a run can say WHY it went the long way.
         self.edge_blocked = False
+        # Why the last transit was not a same-face slide at all (as opposed to one that was
+        # available and blocked): ``None`` when it was one, else a short tag --
+        # ``'start behind face'`` (the pusher's own position is INSIDE the footprint, as
+        # the measured shape pose has it), ``'hover behind face'``, or ``'faces i/j'``
+        # (the two ends stand off different faces).  Log only, like ``edge_blocked``.
+        self.edge_skip = None
         self._fly_mask = None                           # which primitives can be flown to
         # How far a same-edge transit lifts off the face before sliding along it.  The
         # slide is travel, so it is tested against ``no_sweep`` -- the footprint grown by
@@ -965,11 +980,15 @@ class PushController:
         Both ends are the points actually flown to: the pusher's own position, and the
         hand-over point rather than the entry point behind it (see ``_handover``).
         """
+        self.edge_skip = None
         if self.a.no_edge_slide:
+            self.edge_skip = 'no_edge_slide'
             return None
         hover = self._handover(entry)
-        i = self.ik.edge_of(start)
-        if i < 0 or i != self.ik.edge_of(hover):
+        i, j = self.ik.edge_of(start), self.ik.edge_of(hover)
+        if i < 0 or i != j:
+            self.edge_skip = ('start behind face' if i < 0 else
+                              'hover behind face' if j < 0 else f'faces {i}/{j}')
             return None
         n = self.ik.edge_normal(i)
         start = np.asarray(start, dtype=float)
@@ -1293,15 +1312,23 @@ class PushSim(base.Sim):
 def build_args():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
+    # WHICH SHAPE.  This is what the five paths below default to -- mesh, z-up twin,
+    # dataset and checkpoint all come out of shapes.SHAPES[--shape-name], so switching
+    # shapes is one flag rather than four paths that have to be kept consistent.  Each
+    # path is still overridable on its own, for a one-off mesh or a new checkpoint.
+    shapes.add_shape_argument(ap)
+    spec = shapes.active()
     # geometry / planner
-    ap.add_argument('--env', default='datasets/3dshape/2denv4.obj')
-    ap.add_argument('--shape', default='datasets/3dshape/Tshape3d.obj')
-    ap.add_argument('--shape-zup', default='datasets/3dshape/Tshape3d_zup.obj',
+    ap.add_argument('--env', default=spec.env)
+    ap.add_argument('--shape', default=spec.mesh)
+    ap.add_argument('--shape-zup', default=spec.mesh_zup,
                     help='z-up twin of --shape; only its bounding box is read, to recover '
-                         'the origin the planner poses the shape about.')
-    ap.add_argument('--dataPath', default='./testing_data/3dshape/Tshape3d_env4')
+                         'the origin the planner poses the shape about. Optional -- with '
+                         'no twin the same box is read off --shape, which is exact '
+                         'because MESH_TO_WORLD is the y-up -> z-up rotation.')
+    ap.add_argument('--dataPath', default=spec.data_path)
     ap.add_argument('--modelPath', default='./Experiments/3dshape')
-    ap.add_argument('--ckpt', default='./latest.pt')
+    ap.add_argument('--ckpt', default=spec.ckpt)
     ap.add_argument('--case', type=int, default=0, help='test-set index to plan for')
     ap.add_argument('--mppi-steps', type=int, default=200)
     ap.add_argument('--plan-device', default='cuda')
@@ -1493,6 +1520,11 @@ def main():
     # transit.  The flag is still accepted so an explicit invocation reads unambiguously.
     args.teleport = True
 
+    spec = shapes.active()
+    print(spec.describe())
+    for problem in spec.check():
+        print(f'[plan] !! {problem}')
+
     # ---- geometry ------------------------------------------------------------------
     env_mesh = base.load_mesh(args.env)
     tee_mesh = base.load_mesh(args.shape)
@@ -1502,18 +1534,26 @@ def main():
 
     c = tee_polys[0].centroid
     z0 = tee_mesh.bounds[0][2]
+    # Read the bounding box BEFORE re-centring on the centroid: bbox_to_centroid below
+    # is the gap between the two, so it needs the mesh as authored.
+    mesh_bbox_c = 0.5 * (np.asarray(tee_mesh.bounds[0]) + np.asarray(tee_mesh.bounds[1]))
     tee_mesh.apply_translation([-c.x, -c.y, -z0])
     tee_poly = Polygon([(x - c.x, y - c.y) for x, y in tee_polys[0].exterior.coords])
     tee_height = float(tee_mesh.extents[2])
 
-    # The planner poses the shape about the z-up mesh's bounding-box centre.
-    Vz = np.array([[float(t) for t in ln.split()[1:4]]
-                   for ln in open(args.shape_zup) if ln.startswith('v ')])
-    bbox_c = 0.5 * (Vz.min(0) + Vz.max(0))
+    # The planner poses the shape about the z-up mesh's bounding-box centre.  Only the T
+    # ships a z-up twin; without one the same box comes off --shape itself, which is
+    # exact because MESH_TO_WORLD IS the y-up -> z-up rotation.
+    if args.shape_zup and os.path.exists(args.shape_zup):
+        Vz = np.array([[float(t) for t in ln.split()[1:4]]
+                       for ln in open(args.shape_zup) if ln.startswith('v ')])
+        bbox_c = 0.5 * (Vz.min(0) + Vz.max(0))
+    else:
+        bbox_c = mesh_bbox_c
     bbox_to_centroid = np.array([c.x - bbox_c[0], c.y - bbox_c[1]])
 
     # ---- reference path --------------------------------------------------------------
-    womodel = goal_norm = meta = None
+    womodel = goal_norm = None
     if args.traj:
         ref = np.load(args.traj)
         assert ref.ndim == 2 and ref.shape[1] == 3, f'--traj must be (T,3), got {ref.shape}'
@@ -1522,8 +1562,12 @@ def main():
             print('[plan] --traj has no network behind it, so the reference cannot be '
                   'replanned; the pusher control loop is still closed.')
     else:
-        with open(os.path.join(args.dataPath, 'meta.json')) as f:
-            meta = json.load(f)
+        # env_scale / env_center are the TABLE env's own normalization (``spec``'s, the
+        # same for every shape), not the dataset's ``meta.json`` copy -- selecting a shape
+        # changes its mesh and IK, never the environment it is planned against.  A dataset
+        # whose meta.json disagrees was generated against a different environment
+        # (``spec.check()`` above already reported it) and needs rebuilding.
+        env_scale, env_center = spec.table_env_scale(), (*spec.table_env_center(), 0.0)
         womodel, start_norm, goal_norm = load_planner(
             args.dataPath, args.modelPath, args.ckpt, args.case, args.plan_device)
         path_norm, dist = plan_from(womodel, start_norm, goal_norm,
@@ -1531,8 +1575,7 @@ def main():
         print(f'[plan] case {args.case}: {len(path_norm)} waypoints, '
               f'final |goal - x| = {dist:.4f} '
               f'({"converged" if dist < 0.01 else "DID NOT converge"})')
-        ref = planner_to_world(path_norm, meta['env_scale'], meta['env_center'],
-                               bbox_to_centroid)
+        ref = planner_to_world(path_norm, env_scale, env_center, bbox_to_centroid)
 
     ref = resample_path(ref, args.spacing, args.smooth)
     print(f'[plan] reference: {len(ref)} waypoints, '
@@ -1614,7 +1657,7 @@ def main():
     rep = None
     if womodel is not None and not args.no_replan:
         rep = Replanner(womodel, goal_norm, args.plan_device, args.replan_steps,
-                        meta['env_scale'], meta['env_center'], bbox_to_centroid,
+                        env_scale, env_center, bbox_to_centroid,
                         args.spacing, args.smooth)
         print('[replan] closed-loop planning ON: one replan per action, from the T\'s '
               'measured pose -- move, then plan, then move the plan')

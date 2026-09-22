@@ -1,0 +1,55 @@
+shape T  log path/far/log.txt
+goal norm (-0.050, +0.310, +0.000) == (43.3, 8.5, +180deg) cm
+#000  T=(  14.2,  16.5, +89)  norm (+0.333,+0.229,-0.253)  |goal|= 30.2cm  plan 94 pts -> 432 ref waypoints, final |goal-x|=0.0056
+#001  T=(  14.4,  18.5,+100)  norm (+0.331,+0.194,-0.222)  |goal|= 30.6cm  plan 90 pts -> 420 ref waypoints, final |goal-x|=0.0062
+#002  T=(  14.1,  20.1,+114)  norm (+0.337,+0.164,-0.183)  |goal|= 31.4cm  plan 84 pts -> 398 ref waypoints, final |goal-x|=0.0090
+#003  T=(  15.4,  21.1,+132)  norm (+0.324,+0.141,-0.133)  |goal|= 30.6cm  plan 86 pts -> 409 ref waypoints, final |goal-x|=0.0050
+#004  T=(  16.3,  22.4,+147)  norm (+0.318,+0.117,-0.092)  |goal|= 30.4cm  plan 86 pts -> 409 ref waypoints, final |goal-x|=0.0038
+#005  T=(  15.7,  24.4,+164)  norm (+0.335,+0.085,-0.044)  |goal|= 31.8cm  plan 80 pts -> 383 ref waypoints, final |goal-x|=0.0064
+#006  T=(  16.3,  25.9,+179)  norm (+0.335,+0.062,-0.003)  |goal|= 32.1cm  plan 78 pts -> 377 ref waypoints, final |goal-x|=0.0051
+#007  T=(  16.3,  27.8,+167)  norm (+0.328,+0.036,-0.036)  |goal|= 33.2cm  plan 78 pts -> 372 ref waypoints, final |goal-x|=0.0032
+#008  T=(  16.6,  30.0,+179)  norm (+0.331,+0.003,-0.003)  |goal|= 34.3cm  plan 75 pts -> 357 ref waypoints, final |goal-x|=0.0096
+#009  T=(  15.9,  32.1,-169)  norm (+0.348,-0.026,+0.031)  |goal|= 36.1cm  plan 76 pts -> 359 ref waypoints, final |goal-x|=0.0021
+#010  T=(  17.1,  32.7,+179)  norm (+0.324,-0.035,-0.003)  |goal|= 35.6cm  plan 72 pts -> 346 ref waypoints, final |goal-x|=0.0065
+#011  T=(  18.1,  34.4,+161)  norm (+0.299,-0.058,-0.053)  |goal|= 36.1cm  plan 71 pts -> 340 ref waypoints, final |goal-x|=0.0044
+#012  T=(  18.1,  36.1,+175)  norm (+0.307,-0.084,-0.014)  |goal|= 37.4cm  plan 69 pts -> 327 ref waypoints, final |goal-x|=0.0099
+#013  T=(  20.3,  36.1,+174)  norm (+0.275,-0.084,-0.017)  |goal|= 35.9cm  plan 68 pts -> 324 ref waypoints, final |goal-x|=0.0097
+#014  T=(  22.3,  36.1,+160)  norm (+0.239,-0.082,-0.056)  |goal|= 34.7cm  plan 68 pts -> 323 ref waypoints, final |goal-x|=0.0007
+#015  T=(  24.7,  35.5,+153)  norm (+0.201,-0.072,-0.075)  |goal|= 32.8cm  plan 64 pts -> 301 ref waypoints, final |goal-x|=0.0031
+#016  T=(  27.1,  34.6,+145)  norm (+0.163,-0.057,-0.097)  |goal|= 30.7cm  plan 61 pts -> 291 ref waypoints, final |goal-x|=0.0077
+#017  T=(  29.2,  36.4,+149)  norm (+0.135,-0.084,-0.086)  |goal|= 31.2cm  plan 59 pts -> 285 ref waypoints, final |goal-x|=0.0078
+#018  T=(  29.1,  38.5,+165)  norm (+0.144,-0.117,-0.042)  |goal|= 33.2cm  plan 58 pts -> 272 ref waypoints, final |goal-x|=0.0051
+#019  T=(  31.6,  38.0,+157)  norm (+0.104,-0.108,-0.064)  |goal|= 31.7cm  plan 54 pts -> 261 ref waypoints, final |goal-x|=0.0079
+#020  T=(  31.5,  39.7,+177)  norm (+0.117,-0.135,-0.008)  |goal|= 33.3cm  plan 57 pts -> 271 ref waypoints, final |goal-x|=0.0046
+#021  T=(  33.9,  39.8,+164)  norm (+0.075,-0.135,-0.044)  |goal|= 32.7cm  plan 53 pts -> 256 ref waypoints, final |goal-x|=0.0051
+#022  T=(  36.2,  39.4,+159)  norm (+0.040,-0.129,-0.058)  |goal|= 31.7cm  plan 49 pts -> 234 ref waypoints, final |goal-x|=0.0097
+#023  T=(  38.9,  38.8,+146)  norm (-0.005,-0.117,-0.094)  |goal|= 30.6cm  plan 47 pts -> 223 ref waypoints, final |goal-x|=0.0088
+#024  T=(  39.3,  40.4,+164)  norm (-0.002,-0.144,-0.044)  |goal|= 32.1cm  plan 46 pts -> 221 ref waypoints, final |goal-x|=0.0093
+#025  T=(  41.9,  40.1,+158)  norm (-0.042,-0.139,-0.061)  |goal|= 31.6cm  plan 46 pts -> 213 ref waypoints, final |goal-x|=0.0031
+#026  T=(  44.4,  39.3,+149)  norm (-0.082,-0.125,-0.086)  |goal|= 30.8cm  plan 41 pts -> 193 ref waypoints, final |goal-x|=0.0065
+#027  T=(  46.6,  37.7,+149)  norm (-0.114,-0.102,-0.086)  |goal|= 29.4cm  plan 40 pts -> 182 ref waypoints, final |goal-x|=0.0035
+#028  T=(  49.0,  36.0,+142)  norm (-0.151,-0.076,-0.106)  |goal|= 28.1cm  plan 36 pts -> 163 ref waypoints, final |goal-x|=0.0043
+#029  T=(  51.1,  34.6,+125)  norm (-0.188,-0.049,-0.153)  |goal|= 27.2cm  plan 37 pts -> 157 ref waypoints, final |goal-x|=0.0019
+#030  T=(  52.9,  32.3,+111)  norm (-0.217,-0.009,-0.192)  |goal|= 25.6cm  plan 35 pts -> 142 ref waypoints, final |goal-x|=0.0075
+#031  T=(  53.9,  29.4,+103)  norm (-0.233,+0.037,-0.214)  |goal|= 23.4cm  plan 32 pts -> 126 ref waypoints, final |goal-x|=0.0040
+#032  T=(  54.5,  26.5, +97)  norm (-0.242,+0.082,-0.231)  |goal|= 21.2cm  plan 30 pts -> 111 ref waypoints, final |goal-x|=0.0018
+#033  T=(  54.7,  23.5, +87)  norm (-0.245,+0.130,-0.258)  |goal|= 18.8cm  plan 29 pts -> 100 ref waypoints, final |goal-x|=0.0100
+#034  T=(  54.4,  20.5, +79)  norm (-0.240,+0.178,-0.281)  |goal|= 16.3cm  plan 29 pts -> 88 ref waypoints, final |goal-x|=0.0024
+#035  T=(  53.6,  17.8, +71)  norm (-0.228,+0.221,-0.303)  |goal|= 13.9cm  plan 28 pts -> 78 ref waypoints, final |goal-x|=0.0096
+#036  T=(  52.8,  18.3, +79)  norm (-0.218,+0.209,-0.281)  |goal|= 13.6cm  plan 28 pts -> 77 ref waypoints, final |goal-x|=0.0025
+#037  T=(  52.0,  15.7, +72)  norm (-0.205,+0.250,-0.300)  |goal|= 11.3cm  plan 27 pts -> 68 ref waypoints, final |goal-x|=0.0052
+#038  T=(  51.0,  16.2, +81)  norm (-0.192,+0.238,-0.275)  |goal|= 10.9cm  plan 26 pts -> 67 ref waypoints, final |goal-x|=0.0029
+#039  T=(  49.9,  16.6, +91)  norm (-0.177,+0.227,-0.247)  |goal|= 10.4cm  plan 23 pts -> 59 ref waypoints, final |goal-x|=0.0065
+#040  T=(  48.5,  16.7,+104)  norm (-0.156,+0.218,-0.211)  |goal|=  9.7cm  plan 21 pts -> 57 ref waypoints, final |goal-x|=0.0041
+#041  T=(  49.0,  13.6, +96)  norm (-0.164,+0.267,-0.233)  |goal|=  7.6cm  plan 21 pts -> 45 ref waypoints, final |goal-x|=0.0039
+#042  T=(  47.6,  13.7,+110)  norm (-0.142,+0.257,-0.194)  |goal|=  6.7cm  plan 18 pts -> 40 ref waypoints, final |goal-x|=0.0086
+#043  T=(  46.0,  13.7,+129)  norm (-0.114,+0.248,-0.142)  |goal|=  5.8cm  plan 14 pts -> 34 ref waypoints, final |goal-x|=0.0063
+#044  T=(  44.4,  13.0,+148)  norm (-0.083,+0.251,-0.089)  |goal|=  4.6cm  plan 10 pts -> 25 ref waypoints, final |goal-x|=0.0023
+#045  T=(  42.8,  11.7,+172)  norm (-0.047,+0.265,-0.022)  |goal|=  3.2cm  plan 5 pts -> 17 ref waypoints, final |goal-x|=0.0097
+#046  T=(  41.9,   9.7,-164)  norm (-0.021,+0.295,+0.044)  |goal|=  1.8cm  plan 6 pts -> 11 ref waypoints, final |goal-x|=0.0014
+#047  T=(  43.8,  10.0,-167)  norm (-0.050,+0.290,+0.036)  |goal|=  1.6cm  plan 5 pts -> 9 ref waypoints, final |goal-x|=0.0040
+#048  T=(  44.8,  10.7,-179)  norm (-0.071,+0.279,+0.003)  |goal|=  2.6cm  plan 5 pts -> 16 ref waypoints, final |goal-x|=0.0028
+#049  T=(  45.2,   9.3,+165)  norm (-0.086,+0.300,-0.042)  |goal|=  2.1cm  plan 6 pts -> 12 ref waypoints, final |goal-x|=0.0011
+#050  T=(  44.3,   9.3,+175)  norm (-0.067,+0.299,-0.014)  |goal|=  1.3cm  plan 4 pts -> 7 ref waypoints, final |goal-x|=0.0020
+#051  T=(  43.3,   9.5,-174)  norm (-0.047,+0.296,+0.017)  |goal|=  1.0cm  plan 3 pts -> 5 ref waypoints, final |goal-x|=0.0091
+#052  T=(  44.0,   9.8,+179)  norm (-0.061,+0.292,-0.003)  |goal|=  1.5cm  plan 3 pts -> 8 ref waypoints, final |goal-x|=0.0081

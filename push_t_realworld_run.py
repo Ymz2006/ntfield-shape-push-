@@ -49,6 +49,14 @@ from dataclasses import dataclass
 
 import numpy as np
 
+import shapes
+
+# ``--shape-name`` has to be applied BEFORE frame_conversions / push_t_demo_realworld are
+# imported: both bake the active shape's proportions, mesh, dataset and goal into module
+# constants and function default arguments, which bind at import time.  This peek is what
+# makes the flag work at all; build_cli() adds the documented flag on top of it.
+shapes.select_from_argv()
+
 import frame_conversions as FC
 import push_t_demo_realworld as rw
 from real_world_params import PARAMS
@@ -63,7 +71,7 @@ DEF_BLEND = 0.0
 # still count as arrived.  The stop test is BOTH this and ``--goal-cm`` -- a T parked on
 # the goal centroid but turned a quarter turn out of it is not the pose the plan asked
 # for, and the centroid distance alone cannot see that.
-DEF_GOAL_DEG = 3.0
+DEF_GOAL_DEG = 2
 
 # Two arc waypoints closer together than this (metres) are the same point as far as a
 # blended path is concerned -- see ``RtdeArm._fly_arc_blended``.  A millimetre, because
@@ -411,10 +419,20 @@ class RealSenseTeePose:
     resolve to the same shape centre, a median taken across frames (``_read_tee``) is still
     valid when the id changes part-way through it.
 
+    **The ID-10 table marker is remembered, not required.**  It never moves, but the arm
+    leans over its corner and covers it for whole pushes at a time, and with the table
+    frame re-solved from scratch every frame that used to blind the controller with the
+    shape in plain view.  So the last frame solved with the marker actually in view is kept
+    in ``table_pose`` and handed to ``locate_shape`` as its fallback: a frame with the marker
+    covered is measured against it (``last_obs['table_cached']`` is True on those), and
+    the moment the marker is back the fresh solve replaces it.  The only thing this
+    assumes is that the *camera* does not move mid-run -- nudge it and the cached frame is
+    wrong until the marker is next seen.  ``keep_table=False`` turns it off.
+
     ``read()`` returns ``(x_cm, y_cm, theta_rad)`` in the table frame, the shape's own
     pose, ready for ``ArmPushSession.step_real``; ``None`` when the table marker is out of
-    view, when no shape marker at all is in view, or when every visible one failed to
-    measure (the reason, per id, is in ``last_miss``).
+    view and has not been seen yet, when no shape marker at all is in view, or when every
+    visible one failed to measure (the reason, per id, is in ``last_miss``).
 
     Note there are **two dictionaries**: the ID-10 table marker is
     ``camera_test_id10.ARUCO_DICT`` (DICT_ARUCO_ORIGINAL) and the shape's markers are all
@@ -423,7 +441,8 @@ class RealSenseTeePose:
 
     def __init__(self, tee_ids=None, serial=None, width=None, height=None,
                  dict_name=None, tee_dict=None, marker_len_cm=None, yaw_offset_deg=None,
-                 tee_len_cm=None, tee_height_cm=None, center_mode='centroid'):
+                 tee_len_cm=None, tee_height_cm=None, center_mode='centroid',
+                 keep_table=True):
         from camera_test_id10 import (ARUCO_DICT, MARKER_LEN_CM, RealSenseCamera, TEE_DICT,
                                       TEE_LEN_CM, YAW_OFFSET_DEG, make_detector,
                                       realsense_present)
@@ -437,13 +456,14 @@ class RealSenseTeePose:
                         else tuple(sorted({int(i) for i in tee_ids})))
         if not self.tee_ids:
             raise SystemExit(
-                'no shape marker has a position measured -- measure each marker\'s centre '
-                'from the T\'s TOP-LEFT corner (+x right, -y DOWN) into '
-                'frame_conversions.TEE_MARKER_POS_CM')
+                f'no shape marker has a position measured -- measure each marker\'s '
+                f'centre from the {shapes.active_name()}\'s TOP-LEFT corner (+x right, '
+                f'-y DOWN) into shapes.SHAPES[{shapes.active_name()!r}].markers')
         missing = [i for i in self.tee_ids if not FC.tee_marker_configured(i)]
         if missing:
-            raise SystemExit(f'shape marker ids {missing} have no position measured -- fill '
-                             f'in frame_conversions.TEE_MARKER_POS_CM first')
+            raise SystemExit(f'shape marker ids {missing} have no position measured -- '
+                             f'fill in shapes.SHAPES[{shapes.active_name()!r}].markers '
+                             f'first')
         # Resolve every position to an offset up front: a point measured off the shape (a
         # dropped minus sign, x and y swapped) raises, and it should raise here at startup
         # rather than turning into a per-id miss on every frame of the run.
@@ -456,10 +476,10 @@ class RealSenseTeePose:
         self.tee_height_cm = tee_height_cm       # None -> the shape's own thickness
         self.mode = center_mode
 
-        # The planner was trained on one particular T, so take its proportions from that
-        # mesh -- the same call locate_functions.main() makes.
-        dims = LF.sim_tee_dims()
-        self.bar_cm, self.stem_cm = dims if dims else (None, None)
+        # The shape's outline, size and centroid are read off the mesh the planner was
+        # trained on (``shapes.ShapeSpec``), so there is nothing to plumb through here --
+        # ``locate_shape`` reads the same active shape this module did.
+        self.shape = shapes.active()
 
         if not realsense_present():
             raise SystemExit('no RealSense found -- locate_shape needs depth for x, y.')
@@ -473,11 +493,19 @@ class RealSenseTeePose:
               f'shape markers {list(self.tee_ids)} ({tee_dict or TEE_DICT}), read lowest '
               f'id in view first')
         if len(self.tee_ids) < 2:
-            print('[cam] WARNING: only one usable shape marker, so the arm covering it is '
-                  'still a lost frame -- measure the others into '
-                  'frame_conversions.TEE_MARKER_POS_CM')
+            print(f'[cam] WARNING: only one usable shape marker, so the arm covering it '
+                  f'is still a lost frame -- measure the others into '
+                  f'shapes.SHAPES[{shapes.active_name()!r}].markers')
         self.last_miss = None
         self.last_obs = None
+        # the table frame off the last frame that had the ID-10 marker in view -- what a
+        # frame with the marker covered is measured against (see the class docstring)
+        self.keep_table = bool(keep_table)
+        self.table_pose = None
+        self._table_was_cached = False
+        if self.keep_table:
+            print(f'[cam] table marker id {LF.ORIGIN_ID} is remembered: frames with it '
+                  f'covered use its last measured pose (keep the camera still)')
 
     def observe(self):
         """The full ``locate_shape`` dict for one frame, or ``None``."""
@@ -485,10 +513,23 @@ class RealSenseTeePose:
             self.cam, self.detect_table, self.detect_tee,
             marker_len_cm=self.marker_len_cm, yaw_offset_deg=self.yaw_offset_deg,
             tee_ids=self.tee_ids, tee_len_cm=self.tee_len_cm,
-            tee_height_cm=self.tee_height_cm, bar_cm=self.bar_cm, stem_cm=self.stem_cm,
-            mode=self.mode, with_sim_pose=False)
+            tee_height_cm=self.tee_height_cm, shape=self.shape,
+            mode=self.mode, with_sim_pose=False,
+            table_fallback=self.table_pose if self.keep_table else None)
         self.last_miss = self.LF.locate_shape.last_miss
         self.last_obs = obs
+        # Refresh the remembered table frame off every frame that actually saw the marker
+        # -- even one that then found no shape marker, so the cache is as current as the
+        # camera allows.  Say so once each time the marker goes and comes back.
+        fresh = self.LF.locate_shape.last_table_pose
+        if fresh is not None:
+            self.table_pose = fresh
+        cached = bool(obs and obs.get('table_cached'))
+        if cached != self._table_was_cached:
+            print(f'[cam] table marker id {self.LF.ORIGIN_ID} '
+                  + ('covered -- using its last measured pose' if cached
+                     else 'back in view -- pose re-solved live'))
+            self._table_was_cached = cached
         return obs
 
     def read(self):
@@ -524,6 +565,11 @@ class RunResult:
 # move a median.
 READ_SAMPLES = 10
 
+# How many readings in a row may come off the shape's REMEMBERED pose (every marker on it
+# covered, ``_read_tee``) before the run gives up as NO_TEE.  Each one is a step taken
+# blind at where the shape was last seen, and the shape moves under every step.
+DEF_MAX_STALE = 10
+
 
 def _median_pose(poses):
     """Element-wise median of ``(x, y, theta)`` readings; theta as an ANGLE.
@@ -540,13 +586,23 @@ def _median_pose(poses):
                      _wrap(ref + float(np.median(_wrap(P[:, 2] - ref))))])
 
 
-def _read_tee(tracker, samples=READ_SAMPLES, attempts=20, pause=0.1):
+def _read_tee(tracker, samples=READ_SAMPLES, attempts=20, pause=0.1, keep_last=True):
     """One T pose: the median of up to ``samples`` good frames, or ``None`` if none came.
 
     Keeps reading until ``samples`` frames have landed or ``attempts`` reads have been
     made, whichever is first -- a miss costs a ``pause`` and another try, so a marker that
     is simply hidden still gives up in bounded time.  Fewer than ``samples`` good frames
     is not a failure: whatever arrived is what the median is taken over.
+
+    **The last good reading is remembered on the tracker** (``tracker.last_tee``) and,
+    with ``keep_last``, handed back when a reading finds no frame at all -- the arm
+    leaning over the shape can cover all four of its markers at once, and one blind step
+    on the pose the shape was last seen at beats ending the run.  ``tracker.tee_stale``
+    says which it was: False on a fresh median, True on a remembered one, and
+    ``tracker.tee_stale_runs`` counts how many readings in a row have been remembered
+    (``run_pipeline`` bounds that with ``max_stale``).  Unlike the table marker, the shape
+    MOVES -- a remembered pose is where it *was*, so the very first reading of a run has
+    nothing to fall back on and still returns ``None``.
     """
     good = []
     for _ in range(max(int(attempts), int(samples))):
@@ -557,7 +613,18 @@ def _read_tee(tracker, samples=READ_SAMPLES, attempts=20, pause=0.1):
                 break
         else:
             time.sleep(pause)
-    return _median_pose(good) if good else None
+    if good:
+        tee = _median_pose(good)
+        tracker.last_tee = tee.copy()
+        tracker.tee_stale = False
+        tracker.tee_stale_runs = 0
+        return tee
+    last = getattr(tracker, 'last_tee', None)
+    if not keep_last or last is None:
+        return None
+    tracker.tee_stale = True
+    tracker.tee_stale_runs = getattr(tracker, 'tee_stale_runs', 0) + 1
+    return np.asarray(last, dtype=float).copy()
 
 
 def viz_state_writer(path):
@@ -615,6 +682,12 @@ def _transit_note(plan):
     if plan.transit_radius is not None:
         note += f' r={plan.transit_radius / rw.sim_units_per_cm():.1f}cm'
         note += ' +margin' if plan.transit_widened else ' tight'
+    # Why a slide was never on the table.  ``start behind face`` is the one to watch for:
+    # the TCP, put in the body frame of the MEASURED shape pose, sits inside the footprint
+    # -- the shape did not move as far as the push, or its pose is off by a pusher radius
+    # -- and ``edge_of`` will not slide along a face from behind it.
+    if plan.edge_skip:
+        note += f' (no slide: {plan.edge_skip})'
     return note
 
 
@@ -631,8 +704,9 @@ def _push_note(plan):
 
 
 def run_pipeline(sess: rw.ArmPushSession, arm, tracker, *, settle_s=0.6,
-                 max_actions=250, goal_cm=2.0, goal_deg=DEF_GOAL_DEG, accel=DEF_ACCEL,
-                 transit_accel=None, emit=None, verbose=True, park_corner=True):
+                 max_actions=250, goal_cm=1.0, goal_deg=DEF_GOAL_DEG, accel=DEF_ACCEL,
+                 transit_accel=None, emit=None, verbose=True, park_corner=True,
+                 max_stale=DEF_MAX_STALE):
     """Park at the corner, home, then step until close enough / blocked / out of budget.
 
     The home move is an ARC, not a straight line: it retracts to the widest stand-off
@@ -648,8 +722,12 @@ def run_pipeline(sess: rw.ArmPushSession, arm, tracker, *, settle_s=0.6,
     rather than ``GOAL`` -- there is nothing left to execute, but the T is not where the
     plan wanted it.
 
-    Returns a RunResult.  A reading the camera cannot make ends the run with ``NO_TEE`` --
-    the arm is never moved to go looking for the marker.
+    Returns a RunResult.  A reading the camera cannot make is taken from the shape's last
+    good pose instead (``_read_tee``; the step is logged ``STALE``), so the arm covering
+    every marker on the shape for a step or two costs nothing.  ``max_stale`` consecutive
+    such readings end the run with ``NO_TEE`` -- pushing at a pose the shape has not been
+    seen at for that long is pushing blind -- as does a first reading that never lands;
+    ``max_stale <= 0`` never gives up.  The arm is never moved to go looking for a marker.
 
     ``accel`` is the acceleration of the PUSH leg; ``transit_accel`` (default: ``accel``)
     is the acceleration of everything else -- park, home, retract, arc, re-entry.
@@ -681,6 +759,9 @@ def run_pipeline(sess: rw.ArmPushSession, arm, tracker, *, settle_s=0.6,
 
     tee = _read_tee(tracker)
     if tee is None:
+        if verbose:
+            miss = getattr(tracker, 'last_miss', None) or 'no reading'
+            print(f'[run] no T at the park and no earlier pose to fall back on ({miss})')
         return RunResult('NO_TEE', 0, float('nan'))
 
     # The home move is FLOWN, not driven straight at: out to the widest stand-off circle
@@ -704,20 +785,32 @@ def run_pipeline(sess: rw.ArmPushSession, arm, tracker, *, settle_s=0.6,
     dgoal = dang = float('nan')
     for i in range(max_actions):
         tee = _read_tee(tracker)
-        if tee is None:
+        stale_runs = getattr(tracker, 'tee_stale_runs', 0) if tee is not None else None
+        if tee is None or (max_stale > 0 and stale_runs > max_stale):
             if verbose:
                 miss = getattr(tracker, 'last_miss', None) or 'no reading'
-                print(f'[run] #{i:03d}  no T ({miss})')
+                what = ('no T' if tee is None else
+                        f'no T for {stale_runs} readings in a row, over --max-stale {max_stale}')
+                print(f'[run] #{i:03d}  {what} ({miss})')
             return RunResult('NO_TEE', i, dgoal, dang)
+        stale = '  STALE' if getattr(tracker, 'tee_stale', False) else ''
         tcp = np.asarray(arm.tcp_xy_cm(), dtype=float)
         dgoal = float(np.hypot(*(tee[:2] - goal[:2])))
         dang = abs(math.degrees(_wrap(float(tee[2]) - float(goal[2]))))
 
+        was_endgame = bool(getattr(sess, 'endgame', False))
         plan = sess.step_real(tee, tcp, robot=sess.robot, accel=accel,
                               transit_accel=a_transit)
         if verbose:
+            if getattr(sess, 'endgame', False) and not was_endgame:
+                a = sess.args
+                print(f'[run] #{i:03d}  ENDGAME: within '
+                      f'{getattr(a, "endgame_dist_cm", rw.ENDGAME_DIST_CM):.0f} cm / '
+                      f'{getattr(a, "endgame_deg", rw.ENDGAME_DEG):.0f} deg of the goal '
+                      f'pose -- every push from here on is cut to '
+                      f'{getattr(a, "endgame_scale", rw.ENDGAME_PUSH_SCALE):.2f} of its length')
             print(f'[run] #{i:03d}  T=({tee[0]:6.1f},{tee[1]:6.1f},'
-                  f'{math.degrees(tee[2]):+4.0f})  |goal|={dgoal:5.1f}cm/'
+                  f'{math.degrees(tee[2]):+4.0f}){stale}  |goal|={dgoal:5.1f}cm/'
                   f'{dang:4.1f}deg  {plan.status}'
                   f'{_push_note(plan)}{_transit_note(plan)}')
         if emit:
@@ -742,6 +835,24 @@ def run_pipeline(sess: rw.ArmPushSession, arm, tracker, *, settle_s=0.6,
 def build_cli():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
+    # WHICH SHAPE.  Already applied (shapes.select_from_argv() ran at import, before
+    # frame_conversions bound its defaults); this is what documents it and rejects a typo.
+    shapes.add_shape_argument(ap)
+    ap.add_argument('--ckpt', default=None, metavar='PT',
+                    help="override the active shape's checkpoint "
+                         "(shapes.SHAPES[--shape-name].ckpt)")
+    ap.add_argument('--data-path', default=None, metavar='DIR',
+                    help="override the active shape's test-set directory, which supplies "
+                         "the planner's env/speed fields (env_scale/env_center for the "
+                         "normalized frame always come from the table env itself, not "
+                         "this directory). It must have been generated against the env "
+                         "on the table")
+    ap.add_argument('--goal-norm', type=float, nargs=3, default=None,
+                    metavar=('X', 'Y', 'TURNS'),
+                    help="override where the shape should end up, in the planner's "
+                         "NORMALIZED frame: x, y in [-0.5, 0.5] about the field centre "
+                         "and heading in TURNS. Default is that shape's own "
+                         "shapes.SHAPES[...].goal_pose_norm")
     # Defaults come from real_world_params.json; any flag below still overrides it.
     ap.add_argument('--dry-run', action='store_true',
                     help='no hardware: DryRunArm + ReplayTeePose')
@@ -825,6 +936,11 @@ def build_cli():
     ap.add_argument('--settle', type=float, default=0.01,
                     help='seconds to wait after each action before re-observing')
     ap.add_argument('--max-actions', type=int, default=250)
+    ap.add_argument('--max-stale', type=int, default=DEF_MAX_STALE, metavar='N',
+                    help='when no marker on the shape can be seen, a step is taken at the '
+                         'pose it was LAST seen at (logged STALE); this many such steps in '
+                         f'a row end the run as NO_TEE (default {DEF_MAX_STALE}; 0 = never '
+                         'give up)')
     ap.add_argument('--goal-cm', type=float, default=1.0,
                     help='stop once the T centroid is within this of the planned goal '
                          '(with --goal-deg: BOTH have to pass)')
@@ -900,9 +1016,22 @@ def main():
                               ('push_len_steps', cli.push_len_steps),
                               ('endgame_scale', cli.endgame_scale))
             if v is not None}
+    if cli.ckpt:
+        over['ckpt'] = cli.ckpt
+    if cli.data_path:
+        over['dataPath'] = cli.data_path
     args = rw.make_args(plan_device=cli.plan_device,
                         no_replan=cli.no_replan or bool(cli.ref),
                         no_trans_collision=cli.no_trans_collision, **over)
+
+    # What the whole run is about, and what is wrong with it, before the camera or the
+    # arm is touched: a missing checkpoint or a dataset built against a different env is
+    # a run that looks fine and lands 20 cm off, so it is said out loud here.
+    spec = shapes.active()
+    print(spec.describe())
+    for problem in spec.check():
+        print(f'[run] !! {problem}')
+    goal_norm = tuple(cli.goal_norm) if cli.goal_norm else None
     ref = np.load(cli.ref) if cli.ref else None
 
     # The reference runs from WHERE THE T IS to rw.GOAL_POSE_NORM, so with hardware the
@@ -928,7 +1057,7 @@ def main():
             raise SystemExit(f'[run] cannot see the shape ({miss}) -- cannot plan '
                              'without its pose')
     try:                                   # the camera is already streaming by now
-        stack = rw.build_stack(args, ref=ref, start_pose_real=start)
+        stack = rw.build_stack(args, ref=ref, start_pose_real=start, goal=goal_norm)
         robot = rw.RobotFrame.from_startpos(cli.startpos, z_push_m=cli.z_push,
                                             limit=None if cli.no_clamp else FC.NORM_HALF,
                                             box={} if cli.no_clamp else None)
@@ -938,14 +1067,15 @@ def main():
         raise
     sess = rw.ArmPushSession(stack, robot_frame=robot)
     o = robot.origin_xyz_m
-    g, gr = rw.goal_pose_norm(), stack.goal_real()
+    g, gr = rw.goal_pose_norm(goal_norm), stack.goal_real()
     print(f'[run] reference {len(stack.ref)} waypoints; stand-off radius '
           f'{sess.ctrl.standoff / rw.sim_units_per_cm():.1f} cm; '
           f'replan {"OFF" if sess.rep is None else "per action"}')
     if cli.no_trans_collision:
         print('[run] --no_trans_collision: a same-face slide is flown as soon as it is '
               'available, unchecked -- no FAILED TRANS -> ARC fallback')
-    print(f'[run] goal (GOAL_POSE_NORM) norm ({g[0]:+.3f}, {g[1]:+.3f}, '
+    src = '--goal-norm' if goal_norm else f'shapes.SHAPES[{spec.name!r}].goal_pose_norm'
+    print(f'[run] goal ({src}) norm ({g[0]:+.3f}, {g[1]:+.3f}, '
           f'{g[5]:+.3f} turns)'
           + ('' if gr is None else f' == ({gr[0]:.1f}, {gr[1]:.1f}, '
                                    f'{math.degrees(gr[2]):+.0f}deg) cm'))
@@ -981,7 +1111,7 @@ def main():
                            max_actions=cli.max_actions, goal_cm=cli.goal_cm,
                            goal_deg=cli.goal_deg, accel=cli.accel,
                            transit_accel=cli.transit_accel, emit=emit,
-                           park_corner=not cli.no_park)
+                           park_corner=not cli.no_park, max_stale=cli.max_stale)
     finally:
         arm.close()
         if hasattr(tracker, 'close'):

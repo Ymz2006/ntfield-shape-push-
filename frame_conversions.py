@@ -83,6 +83,7 @@ import os
 
 import numpy as np
 
+import shapes
 from real_world_params import PARAMS
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -125,32 +126,57 @@ SIM_TO_BASE = np.array([-1.0, -1.0])
 STARTPOS_JSON = PARAMS.startpos_json
 
 # ======================================================================================
-# the T shape's own geometry
+# the shape's own geometry -- whichever shape the rig is running
 # ======================================================================================
-# The T's proportions are NOT free: they have to match the shape the planner was trained
-# on, ``datasets/3dshape/Tshape3d_zup.obj`` -- 60 x 60 units with a 10-unit crossbar and a
-# 10-unit stem, i.e. both are 1/6 of the bounding box, a much thinner T than the usual 1/3
-# push-T.  ``locate_functions.sim_tee_dims`` reads them back off that mesh to check these
-# have not drifted; they are the fallback, and the marker -> shape offset below is built
-# from them.
-TEE_SIZE_CM = 12.0          # the T's bounding box, both ways
-TEE_BAR_CM = 2.0            # crossbar thickness  = 12 * 10/60
-TEE_STEM_CM = 2.0           # stem width          = 12 * 10/60
-MARKER_FROM_TOP_CM = 1.2    # ID-1 marker centre, measured down from the T's top edge;
-                            # TEE_MARKER_POS_CM[1] is (TEE_SIZE_CM / 2, -this)
-# Heading of a shape marker's own +x edge measured in the T's BODY frame, degrees CCW.  The
-# markers are stuck on turned: the +x edge runs along the T's -x, so the body heading is the
-# marker heading less 180, and the marker -> centre offset has to be turned by that same
-# -180 before it can be added to a table-frame position.  0 would mean the two frames
-# agree.  Measured off the live scene: the shape sat a quarter-turn CCW of where the marker
-# put it, and taking a further 90 off here is what turns it back.
+# The rig pushes ONE shape per process, chosen with ``--shape-name`` and resolved by
+# ``shapes.py``; ``SHAPE`` is that choice, read once here so every default argument below
+# is bound to it.  Selecting a different shape after this module is imported raises
+# rather than half-applying -- see ``shapes.select``.
 #
-# **This one number covers all four markers on the shape**, because they are all glued on
-# the same way round, so it is NOT part of the per-marker table -- see TEE_MARKER_POS_CM,
+# The proportions are NOT constants any more.  They are read off the shape's own mesh,
+# which is the shape the planner was trained on, and scaled by the field calibration
+# (2denv4 is 350 mesh units across a 70 cm field, so one mesh unit is 2 mm).  The T comes
+# out 12 x 12 cm with a 2 cm crossbar and a 2 cm stem -- exactly the numbers that used to
+# be written here -- but now it cannot drift from the mesh, and a V or a rectangle needs
+# no new constants at all.
+# Run as a script (``python frame_conversions.py --shape-name V``) the flag has to be
+# honoured HERE, before the constants below bind: by the time ``main()`` runs, every
+# default argument in this file is already bound to whatever shape was active.  Imported
+# as a library it is the entry point's job, which is why this is guarded -- a library
+# reading sys.argv behind its caller's back is how two modules end up on two shapes.
+if __name__ == "__main__":
+    shapes.select_from_argv()
+
+SHAPE = shapes.active()
+
+# ``(width_cm, height_cm)`` of the shape's bounding box on the table.
+SHAPE_SIZE_CM = SHAPE.size_cm()
+# The single-number size, kept because the T is square and most of the rig says "the 12 cm
+# T".  For a shape whose box is not square this is the LONGER side; anything that needs
+# the box per axis uses SHAPE_SIZE_CM.
+TEE_SIZE_CM = float(max(SHAPE_SIZE_CM))
+# The T's crossbar / stem widths, centimetres.  Meaningful for the T alone -- they are
+# what its outline used to be rebuilt from -- so they are measured back off the mesh for
+# it and left None for any other shape.  Nothing in the measurement path reads them any
+# more; the outline itself does that job now.
+TEE_BAR_CM, TEE_STEM_CM = (2.0, 2.0) if SHAPE.name == 'T' else (None, None)
+# The nominal placement of the lowest-id marker: horizontally centred, this far down from
+# the shape's top edge.  Only the T has one -- a designed spot its measured row can be held
+# against -- so it is None for a shape whose markers were simply put where they fit, and
+# the self-test below then has nothing to compare and says so instead of crying slip.
+MARKER_FROM_TOP_CM = SHAPE.marker_nominal_from_top_cm
+# Heading of a shape marker's own +x edge measured in the shape's BODY frame, degrees CCW.
+# The markers are stuck on turned: at 180 the +x edge runs along the shape's -x, so the
+# body heading is the marker heading less 180, and the marker -> centre offset has to be
+# turned by that same -180 before it can be added to a table-frame position.  0 would mean
+# the two frames agree.  Measured off the live scene.
+#
+# **This one number covers every marker on the shape**, because they are all glued on the
+# same way round, so it is NOT part of the per-marker table -- see TEE_MARKER_POS_CM,
 # which holds only where each marker sits.  Nothing but the position differs per marker.
-MARKER_YAW_ON_TEE_DEG = 180.0
-CENTER_MODES = ("centroid", "bbox")
-# How far outside the T's outline a measured marker centre may land before
+MARKER_YAW_ON_TEE_DEG = float(SHAPE.marker_yaw_deg)
+CENTER_MODES = shapes.CENTER_MODES
+# How far outside the shape's outline a measured marker centre may land before
 # ``tee_marker_offset`` calls it a mistake.  Not zero: a marker glued right up to an edge
 # measures a couple of millimetres over it, and a ruler read to the nearest millimetre on a
 # 2 cm stem is easily that far out.  Big enough to allow a real placement, far too small to
@@ -162,6 +188,11 @@ MARKER_ON_TEE_TOL_CM = 0.6
 # differ from the nominal by a few millimetres -- the nominal is only where the marker was
 # meant to go.  What this still catches is a row that is off by a whole marker width.
 MARKER_NOMINAL_TOL_CM = 2.0
+
+
+def _shape(shape=None):
+    """The :class:`shapes.ShapeSpec` in play -- the module's, or a caller's override."""
+    return SHAPE if shape is None else shapes.resolve(shape)
 
 
 def _center():
@@ -238,159 +269,145 @@ def tilt_deg(pose):
 
 
 # ======================================================================================
-# the T's body geometry -- what the marker -> shape offset is built out of
+# the shape's body geometry -- what the marker -> shape offset is built out of
 # ======================================================================================
-def tee_outline_cm(size_cm=TEE_SIZE_CM, bar_cm=TEE_BAR_CM, stem_cm=None):
-    """The T's outline as ``(8, 2)`` cm, about the **middle of its bounding box**.
+# All four of these used to rebuild the T analytically from TEE_SIZE_CM / TEE_BAR_CM /
+# TEE_STEM_CM.  They now read the ACTIVE SHAPE'S MESH instead (``shapes.ShapeSpec``), so
+# the polygon the marker positions are checked against, the centroid the camera reports
+# and the outline the viewers draw are all the same shape the checkpoint was trained on,
+# for a V and a rectangle as much as for the T.  The names are unchanged because the
+# whole rig calls them.
+def tee_outline_cm(shape=None, mode="bbox"):
+    """The shape's outline as an ``(N, 2)`` loop in centimetres, CCW.
 
-    Pointing down: the crossbar spans the full width along the top, the stem hangs from
-    it to the bottom edge.  ``+y`` is toward the top of the T, ``+x`` to its right -- the
-    same orientation ``Tshape3d_zup.obj`` is authored in, so a sim pose of ``theta = 0``
-    and a table pose of ``theta = 0`` mean the same thing.
+    ``mode="bbox"`` (the default, and what the old T-only version returned) puts the
+    origin at the middle of the bounding box; ``"centroid"`` puts it at the area centroid.
+
+    For the T this is the same eight-sided polygon as before -- crossbar along the top,
+    stem hanging to the bottom edge, ``+y`` toward the top of the shape and ``+x`` to its
+    right, the orientation ``Tshape3d_zup.obj`` is authored in -- so a sim pose of
+    ``theta = 0`` and a table pose of ``theta = 0`` still mean the same thing.
     """
-    stem_cm = bar_cm if stem_cm is None else stem_cm
-    h, b = size_cm / 2.0, stem_cm / 2.0
-    y_bar = h - bar_cm                                   # underside of the crossbar
-    return np.array([(-h, h), (h, h), (h, y_bar), (b, y_bar),
-                     (b, -h), (-b, -h), (-b, y_bar), (-h, y_bar)], dtype=np.float64)
+    return _shape(shape).outline_cm(mode)
 
 
 def polygon_centroid(pts):
     """Area centroid of a simple polygon, by the shoelace formula."""
-    p = np.asarray(pts, dtype=np.float64)
-    q = np.roll(p, -1, axis=0)
-    cross = p[:, 0] * q[:, 1] - q[:, 0] * p[:, 1]
-    area = float(cross.sum()) / 2.0
-    if abs(area) < 1e-12:
-        return np.zeros(2)
-    return np.array([float((cross * (p[:, 0] + q[:, 0])).sum()),
-                     float((cross * (p[:, 1] + q[:, 1])).sum())]) / (6.0 * area)
+    return shapes.polygon_centroid(pts)
 
 
-def tee_center_local_cm(size_cm=TEE_SIZE_CM, bar_cm=TEE_BAR_CM, stem_cm=None,
-                        mode="centroid"):
+def tee_center_local_cm(shape=None, mode="centroid"):
     """Where "the centre" is, in bounding-box coordinates.
 
     ``bbox`` -> ``(0, 0)`` by definition.  ``centroid`` -> the area centroid, which for the
-    sim's 12 x 12 T sits 2.27 cm *above* the box middle, because the crossbar carries more
-    area than the stem.  ``load_geometry`` builds ``tee_poly`` about the centroid and the
-    sim world SE(2) pose is about that same point, so ``centroid`` is what aligns with
+    12 x 12 T sits 2.27 cm *above* the box middle, because the crossbar carries more area
+    than the stem.  ``load_geometry`` builds ``tee_poly`` about the centroid and the sim
+    world SE(2) pose is about that same point, so ``centroid`` is what aligns with
     ``push_t_demo_sim`` and is the default here.
     """
-    if mode not in CENTER_MODES:
-        raise ValueError(f"center mode must be one of {CENTER_MODES}, got {mode!r}")
-    if mode == "bbox":
-        return np.zeros(2)
-    return polygon_centroid(tee_outline_cm(size_cm, bar_cm, stem_cm))
+    return _shape(shape).center_local_cm(mode)
 
 
-def tee_body_outline_cm(size_cm=TEE_SIZE_CM, bar_cm=TEE_BAR_CM, stem_cm=None,
-                        mode="centroid"):
+def tee_body_outline_cm(shape=None, mode="centroid"):
     """The outline about whichever centre ``mode`` names -- what ``visualize`` draws."""
-    return (tee_outline_cm(size_cm, bar_cm, stem_cm)
-            - tee_center_local_cm(size_cm, bar_cm, stem_cm, mode))
+    return _shape(shape).outline_cm(mode)
 
 
-def marker_to_center_offset_cm(size_cm=TEE_SIZE_CM, bar_cm=TEE_BAR_CM, stem_cm=None,
-                               from_top_cm=MARKER_FROM_TOP_CM, mode="centroid"):
+def marker_to_center_offset_cm(shape=None, from_top_cm=MARKER_FROM_TOP_CM,
+                               mode="centroid"):
     """Vector from a horizontally centred marker's centre to the shape centre, cm.
 
-    Such a marker is on the T's own ``+y`` axis, so this comes out purely along ``-y``:
-    from the marker, down toward the middle of the shape.  It is the *derivation* of ID 1's
-    row of ``TEE_MARKER_POS_CM`` -- ``(size_cm / 2, -from_top_cm)`` in the measuring frame --
-    kept so that row can be checked rather than trusted; ``frame_conversions.py`` run as a
-    script compares the two.  The other three markers are hand-placed anywhere on the
-    shape, so nothing here predicts them: they are measured straight into that table.
+    Such a marker is on the shape's own ``+y`` axis, so for a symmetric shape this comes
+    out purely along ``-y``: from the marker, down toward the middle of the shape.  It is
+    the *derivation* of ID 1's row of ``TEE_MARKER_POS_CM`` -- ``(width / 2, -from_top_cm)``
+    in the measuring frame -- kept so that row can be checked rather than trusted;
+    ``frame_conversions.py`` run as a script compares the two.  The other markers are
+    hand-placed anywhere on the shape, so nothing here predicts them: they are measured
+    straight into that table.
     """
-    marker_local = np.array([0.0, size_cm / 2.0 - from_top_cm])
-    return tee_center_local_cm(size_cm, bar_cm, stem_cm, mode) - marker_local
+    spec = _shape(shape)
+    if from_top_cm is None:
+        raise ValueError(f"{spec.name} has no nominal marker placement to derive -- set "
+                         f"shapes.SHAPES[{spec.name!r}].marker_nominal_from_top_cm, or "
+                         f"pass from_top_cm, if one of its markers has a designed spot")
+    _w, h = spec.marker_box_cm()
+    marker_local = np.array([0.0, h / 2.0 - float(from_top_cm)])
+    return spec.marker_center_cm(mode) - marker_local
 
 
 # ======================================================================================
 # where each marker sits on the shape -- measured in the TOP-LEFT frame
 # ======================================================================================
-# FOUR ArUco markers, four different ids, glued to four different parts of the T.  Any one
-# of them fixes the whole shape pose by itself, so a marker going under the arm's own body
-# -- the failure that used to drop the track outright -- costs nothing as long as one of
-# the other three is in view.  ``locate_functions.locate_shape`` walks the ids in
+# FOUR ArUco markers, four different ids, glued to four different parts of the shape.  Any
+# one of them fixes the whole shape pose by itself, so a marker going under the arm's own
+# body -- the failure that used to drop the track outright -- costs nothing as long as one
+# of the others is in view.  ``locate_functions.locate_shape`` walks the ids in
 # INCREASING order and reports off the first one it can actually measure.
 #
 # What each marker needs is where it sits on the shape.  That is measured in the frame you
-# can actually put a ruler in -- **hold the T the way it reads in text**, crossbar along the
-# top, stem hanging down:
+# can actually put a ruler in -- **hold the shape the way it reads in text** (for the T:
+# crossbar along the top, stem hanging down):
 #
-#         (0, 0)                                    ORIGIN: the TOP-LEFT corner of the T's
-#           +------------------------------+        12 x 12 cm bounding box, i.e. the left
-#           |                              |        end of the crossbar's top edge.
-#           |          crossbar            |        +x  to the RIGHT
-#           +---------+          +---------+        -y  DOWNWARD, so every point on the
-#                     |          |                      shape has y <= 0.
-#                     |  stem    |
-#                     |          |                  Read x off the top edge, y down the
+#         (0, 0)                                    ORIGIN: the TOP-LEFT corner of the
+#           +------------------------------+        shape's bounding box.
+#           |                              |        +x  to the RIGHT
+#           |          crossbar            |        -y  DOWNWARD, so every point on the
+#           +---------+          +---------+            shape has y <= 0.
+#                     |          |
+#                     |  stem    |                  Read x off the top edge, y down the
 #                     |          |                  left edge, both to the CENTRE of the
-#                     +----------+                  marker's square.  Nothing else.
+#                     |          |                  marker's square.  Nothing else.
+#                     +----------+
 #                (6, -12)
 #
 # So a marker whose centre is 4 cm in from the left edge and 3 cm down from the top is
-# ``(4.0, -3.0)``.  The T's own centre of area, the crossbar, the stem, the centroid -- none
-# of that comes into it; ``tee_marker_offset`` converts and does the centroid arithmetic
-# itself, and it checks the point actually lands on the shape so a dropped minus sign is
-# caught rather than believed.
+# ``(4.0, -3.0)``.  The shape's centre of area, its arms, its notches -- none of that comes
+# into it; ``tee_marker_offset`` converts and does the centroid arithmetic itself, and it
+# checks the point actually lands on the shape's outline so a dropped minus sign is caught
+# rather than believed.
 #
-# ID 1 is filled in: horizontally centred (12 / 2 = 6.0 from the left) and
-# MARKER_FROM_TOP_CM = 1.2 cm down, i.e. ``(6.0, -1.2)``.
+# **The table is per shape and lives in ``shapes.SHAPES[...].markers``**, not here: a
+# position measured on the T means nothing on a V.  This name is the ACTIVE shape's rows,
+# so everything that already read ``TEE_MARKER_POS_CM`` keeps working and automatically
+# follows ``--shape-name``.  Fill in a new shape's rows there.
 #
-# THE OTHER THREE ARE YOURS TO MEASURE -- replace each ``None`` with that marker's
-# ``(x_cm, y_cm)``.  An id left ``None`` is skipped, not guessed at: ``locate_shape`` falls
+# An id whose row is ``None`` is **skipped, not guessed at**: ``locate_shape`` falls
 # through to the next one rather than reporting a pose off a position nobody measured.
 #
-# The mount angle is NOT here because it is the same for every marker: they are all glued on
-# the same way round, so one MARKER_YAW_ON_TEE_DEG covers all four.  (A marker deliberately
-# stuck on turned differently can carry its own as an optional third element,
-# ``(x_cm, y_cm, yaw_deg)`` -- but if they all match, leave it off.)
-TEE_MARKER_IDS = (1, 2, 3, 4)
-DEFAULT_TEE_MARKER_ID = 1
-
-TEE_MARKER_POS_CM = {
-    # id: (x_cm, y_cm) -- the marker centre, from the T's TOP-LEFT corner, +x right, -y down
-    1: (5.5, -0.7),
-    2: (1.6, -0.7),        # <-- (x_cm, y_cm)
-    3: (9.8, -0.7),        # <-- (x_cm, y_cm)
-    4: (5.5,-10.3),        # <-- (x_cm, y_cm)
-}
+# The mount angle is NOT in the table because it is the same for every marker on a shape:
+# they are all glued on the same way round, so one ``marker_yaw_deg`` covers them all.  (A
+# marker deliberately stuck on turned differently can carry its own as an optional third
+# element, ``(x_cm, y_cm, yaw_deg)`` -- but if they all match, leave it off.)
+TEE_MARKER_POS_CM = dict(SHAPE.markers)
+TEE_MARKER_IDS = tuple(sorted(TEE_MARKER_POS_CM))
+DEFAULT_TEE_MARKER_ID = TEE_MARKER_IDS[0] if TEE_MARKER_IDS else 1
 
 
-def tee_topleft_to_body_cm(x_cm, y_cm, size_cm=TEE_SIZE_CM):
-    """A point measured from the T's TOP-LEFT corner -> its bbox-centred body frame, cm.
+def tee_topleft_to_body_cm(x_cm, y_cm, shape=None):
+    """A point measured from the shape's TOP-LEFT corner -> its bbox-centred body frame.
 
-    The measuring frame has its origin at the corner with ``-y`` running down the shape; the
-    body frame ``tee_outline_cm`` is drawn in is centred on the bounding box with ``+y``
-    running up it.  Same axes directions, so this is a pure translation by half the box:
-    ``(0, 0)`` -> ``(-6, +6)`` and ``(6, -12)`` -> ``(0, -6)`` for a 12 cm T.
+    The measuring frame has its origin at that corner with ``-y`` running down the shape;
+    the body frame ``tee_outline_cm`` is drawn in is centred on the bounding box with
+    ``+y`` running up it.  Same axis directions, so this is a pure translation by half the
+    box -- PER AXIS, since a rectangle's box is not square: ``(0, 0)`` -> ``(-6, +6)`` and
+    ``(6, -12)`` -> ``(0, -6)`` for the 12 x 12 T.
     """
-    h = float(size_cm) / 2.0
-    return np.array([float(x_cm) - h, float(y_cm) + h])
+    return _shape(shape).topleft_to_body_cm(x_cm, y_cm)
 
 
-def tee_body_to_topleft_cm(x_cm, y_cm, size_cm=TEE_SIZE_CM):
+def tee_body_to_topleft_cm(x_cm, y_cm, shape=None):
     """Inverse of ``tee_topleft_to_body_cm`` -- a body-frame point back onto the ruler."""
-    h = float(size_cm) / 2.0
-    return np.array([float(x_cm) + h, float(y_cm) - h])
+    return _shape(shape).body_to_topleft_cm(x_cm, y_cm)
 
 
-def on_tee(x_cm, y_cm, size_cm=TEE_SIZE_CM, bar_cm=TEE_BAR_CM, stem_cm=None, tol_cm=0.0):
-    """Is this BODY-frame point on the T's material?  The T is two rectangles, so this is
-    two range checks rather than a general point-in-polygon test.
+def on_tee(x_cm, y_cm, shape=None, tol_cm=0.0):
+    """Is this BODY-frame point on the shape's material?
 
-    ``tol_cm`` grows the shape, for a marker centre measured a hair outside a real edge.
+    A crossing-number test against the mesh outline, so it is right for a V or an L as
+    well as for the T's two rectangles.  ``tol_cm`` grows the shape, for a marker centre
+    measured a hair outside a real edge.
     """
-    stem_cm = bar_cm if stem_cm is None else stem_cm
-    h, b, t = float(size_cm) / 2.0, float(stem_cm) / 2.0, float(tol_cm)
-    y_bar = h - float(bar_cm)                                # underside of the crossbar
-    x, y = float(x_cm), float(y_cm)
-    in_bar = -h - t <= x <= h + t and y_bar - t <= y <= h + t
-    in_stem = -b - t <= x <= b + t and -h - t <= y <= y_bar + t
-    return bool(in_bar or in_stem)
+    return _shape(shape).on_shape(x_cm, y_cm, tol_cm)
 
 
 def _positions(positions=None):
@@ -430,16 +447,15 @@ def tee_marker_pos(marker_id, positions=None):
     entry = table[key]
     if entry is None:
         raise ValueError(
-            f"marker id {key} has no position yet: set TEE_MARKER_POS_CM[{key}] to that "
-            f"marker's centre measured from the T's TOP-LEFT corner, (x_cm, y_cm) with +x "
-            f"right and -y DOWN -- so y is negative")
+            f"marker id {key} has no position yet: set shapes.SHAPES[{SHAPE.name!r}]"
+            f".markers[{key}] to that marker's centre measured from the shape's TOP-LEFT "
+            f"corner, (x_cm, y_cm) with +x right and -y DOWN -- so y is negative")
     yaw = float(entry[2]) if len(entry) > 2 else MARKER_YAW_ON_TEE_DEG
     return (float(entry[0]), float(entry[1]), yaw)
 
 
-def tee_marker_offset(marker_id, positions=None, mode="centroid", size_cm=TEE_SIZE_CM,
-                      bar_cm=TEE_BAR_CM, stem_cm=None):
-    """``(dx_cm, dy_cm, yaw_deg)`` -- marker centre -> shape centre, in the T's body frame.
+def tee_marker_offset(marker_id, positions=None, mode="centroid", shape=None):
+    """``(dx_cm, dy_cm, yaw_deg)`` -- marker centre -> shape centre, in its body frame.
 
     This is the bridge between the two frames: the table is measured off the top-left
     corner, everything downstream wants a vector to the shape's own origin, and doing the
@@ -447,31 +463,34 @@ def tee_marker_offset(marker_id, positions=None, mode="centroid", size_cm=TEE_SI
     that origin is (``centroid``, what the sim poses about, or the bbox middle), so the
     measured numbers never have to change when that choice does.
 
-    The point is checked against the T's outline first: an ``x`` past an edge or a ``y``
-    entered positive puts the marker off the shape, which is a measuring slip rather than a
-    strange but valid placement, so it raises here instead of quietly biasing every frame.
+    The point is checked against the shape's own outline first: an ``x`` past an edge or a
+    ``y`` entered positive puts the marker off the shape, which is a measuring slip rather
+    than a strange but valid placement, so it raises here instead of quietly biasing every
+    frame.
     """
+    spec = _shape(shape)
     x_cm, y_cm, yaw = tee_marker_pos(marker_id, positions)
-    local = tee_topleft_to_body_cm(x_cm, y_cm, size_cm)
-    if not on_tee(local[0], local[1], size_cm, bar_cm, stem_cm, tol_cm=MARKER_ON_TEE_TOL_CM):
+    local = spec.topleft_to_body_cm(x_cm, y_cm)
+    if not spec.on_shape(local[0], local[1], tol_cm=MARKER_ON_TEE_TOL_CM):
+        w, h = spec.size_cm()
         raise ValueError(
-            f"marker id {int(marker_id)} at ({x_cm:+.2f}, {y_cm:+.2f}) cm is not on the T. "
-            f"Measure from the TOP-LEFT corner with +x right and -y DOWN, to the marker's "
-            f"centre: x in [0, {float(size_cm):.1f}] and y in [-{float(size_cm):.1f}, 0], "
-            f"and on the crossbar or the stem rather than in the notch beside it. "
-            f"A positive y is the usual slip.")
-    dx, dy = tee_center_local_cm(size_cm, bar_cm, stem_cm, mode) - local
+            f"marker id {int(marker_id)} at ({x_cm:+.2f}, {y_cm:+.2f}) cm is not on the "
+            f"{spec.name}. Measure from the TOP-LEFT corner with +x right and -y DOWN, to "
+            f"the marker's centre: x in [0, {w:.1f}] and y in [-{h:.1f}, 0], and on the "
+            f"shape's material rather than in a notch beside it. A positive y is the usual "
+            f"slip.")
+    dx, dy = spec.center_local_cm(mode) - local
     return (float(dx), float(dy), yaw)
 
 
-def _resolve_offset(marker_id, offset, positions, mode, size_cm, bar_cm, stem_cm):
+def _resolve_offset(marker_id, offset, positions, mode, shape=None):
     """One place where "which offset am I using" is decided.
 
     An explicit ``offset`` wins -- that is the path ``locate_shape`` takes, having looked
     the marker up once already -- otherwise it is ``marker_id``'s row in the table.
     """
     if offset is None:
-        return tee_marker_offset(marker_id, positions, mode, size_cm, bar_cm, stem_cm)
+        return tee_marker_offset(marker_id, positions, mode, shape)
     return (float(offset[0]), float(offset[1]),
             float(offset[2]) if len(offset) > 2 else MARKER_YAW_ON_TEE_DEG)
 
@@ -480,7 +499,7 @@ def _resolve_offset(marker_id, offset, positions, mode, size_cm, bar_cm, stem_cm
 # marker <-> shape
 # ======================================================================================
 def tee_theta_from_marker(marker_theta_rad, marker_id=DEFAULT_TEE_MARKER_ID, offset=None,
-                          positions=None):
+                          positions=None, shape=None):
     """The T's own heading, from the heading the camera measures off one of its markers.
 
     The markers are mounted turned, so the two headings differ by a fixed amount: the
@@ -489,23 +508,20 @@ def tee_theta_from_marker(marker_theta_rad, marker_id=DEFAULT_TEE_MARKER_ID, off
     the answer -- ``marker_id`` is here so the table stays the single source of the number,
     not because the arithmetic depends on it.
     """
-    yaw = _resolve_offset(marker_id, offset, positions, "centroid",
-                          TEE_SIZE_CM, TEE_BAR_CM, None)[2]
+    yaw = _resolve_offset(marker_id, offset, positions, "centroid", shape)[2]
     return float(_wrap(float(marker_theta_rad) - math.radians(yaw)))
 
 
 def marker_theta_from_tee(tee_theta_rad, marker_id=DEFAULT_TEE_MARKER_ID, offset=None,
-                          positions=None):
+                          positions=None, shape=None):
     """Inverse of ``tee_theta_from_marker``: the T's heading -> that marker's."""
-    yaw = _resolve_offset(marker_id, offset, positions, "centroid",
-                          TEE_SIZE_CM, TEE_BAR_CM, None)[2]
+    yaw = _resolve_offset(marker_id, offset, positions, "centroid", shape)[2]
     return float(_wrap(float(tee_theta_rad) + math.radians(yaw)))
 
 
 def aruco_to_center(marker_x_cm, marker_y_cm, marker_theta_rad,
                     marker_id=DEFAULT_TEE_MARKER_ID, offset=None, positions=None,
-                    mode="centroid", size_cm=TEE_SIZE_CM, bar_cm=TEE_BAR_CM,
-                    stem_cm=None):
+                    mode="centroid", shape=None):
     """One marker's pose in the table frame -> the T **shape's** centre, cm.
 
     Two turns, in this order:
@@ -528,17 +544,15 @@ def aruco_to_center(marker_x_cm, marker_y_cm, marker_theta_rad,
 
     Returns ``(x_cm, y_cm)``.  ``center_to_aruco`` is the exact inverse.
     """
-    dx, dy, yaw = _resolve_offset(marker_id, offset, positions, mode, size_cm, bar_cm,
-                                  stem_cm)
-    th = tee_theta_from_marker(marker_theta_rad, offset=(dx, dy, yaw))
+    dx, dy, yaw = _resolve_offset(marker_id, offset, positions, mode, shape)
+    th = tee_theta_from_marker(marker_theta_rad, offset=(dx, dy, yaw), shape=shape)
     c, s = math.cos(th), math.sin(th)
     return (float(marker_x_cm) + c * dx - s * dy,
             float(marker_y_cm) + s * dx + c * dy)
 
 
 def center_to_aruco(x_cm, y_cm, tee_theta_rad, marker_id=DEFAULT_TEE_MARKER_ID,
-                    offset=None, positions=None, mode="centroid",
-                    size_cm=TEE_SIZE_CM, bar_cm=TEE_BAR_CM, stem_cm=None):
+                    offset=None, positions=None, mode="centroid", shape=None):
     """The T shape's centre -> where one of its markers sits, cm.  Inverse of
     ``aruco_to_center``.
 
@@ -552,8 +566,7 @@ def center_to_aruco(x_cm, y_cm, tee_theta_rad, marker_id=DEFAULT_TEE_MARKER_ID,
     puts four different markers in four different places, which is what makes this useful
     for predicting where each one should appear (and hence which are worth looking for).
     """
-    dx, dy, _ = _resolve_offset(marker_id, offset, positions, mode, size_cm, bar_cm,
-                                stem_cm)
+    dx, dy, _ = _resolve_offset(marker_id, offset, positions, mode, shape)
     c, s = math.cos(float(tee_theta_rad)), math.sin(float(tee_theta_rad))
     return (float(x_cm) - (c * dx - s * dy),
             float(y_cm) - (s * dx + c * dy))
@@ -750,6 +763,10 @@ def field_corners_cm():
 
 
 def main():
+    print(SHAPE.describe())
+    for problem in SHAPE.check():
+        print(f"  !! {problem}")
+    print()
     cx, cy = FIELD_CENTER_CM
     print(f"table frame: origin at the ID-{ORIGIN_ID} marker, +x along the length, "
           f"+y along the width, cm")
@@ -769,14 +786,16 @@ def main():
 
     # ---- marker -> shape: one row per marker, and the round trip through each ----
     ready = tee_marker_ids()
-    print(f"\nmarkers on the shape: {list(TEE_MARKER_IDS)}, usable {list(ready)}, mount "
-          f"{MARKER_YAW_ON_TEE_DEG:+.1f} deg shared by all")
+    yaws = {tee_marker_pos(i)[2] for i in ready}
+    mount = (f"mount {yaws.pop():+.1f} deg shared by all" if len(yaws) == 1
+             else "mount angle PER MARKER (see the rows)")
+    print(f"\nmarkers on the shape: {list(TEE_MARKER_IDS)}, usable {list(ready)}, {mount}")
     print(f"  {'':4s}{'measured from top-left':<24s}{'-> body frame':<18s}"
           f"-> offset to the centroid")
     for mid in sorted(TEE_MARKER_POS_CM):
         if not tee_marker_configured(mid):
-            print(f"  id {mid}   NOT MEASURED -- put (x_cm, y_cm) from the T's top-left "
-                  f"corner in TEE_MARKER_POS_CM[{mid}]")
+            print(f"  id {mid}   NOT MEASURED -- put (x_cm, y_cm) from the shape's "
+                  f"top-left corner in shapes.SHAPES[{SHAPE.name!r}].markers[{mid}]")
             continue
         px, py, yaw = tee_marker_pos(mid)
         bx, by = tee_topleft_to_body_cm(px, py)
@@ -788,7 +807,20 @@ def main():
         print(f"  id {mid}   ({px:+6.2f}, {py:+6.2f}) cm         "
               f"({bx:+6.2f}, {by:+6.2f})     ({dx:+6.2f}, {dy:+6.2f}) cm, "
               f"mount {yaw:+.1f} deg")
-    # ID 1 has a nominal placement the others do not -- horizontally centred,
+    if not ready:
+        print("  no marker has a position measured yet -- nothing to check against")
+        return
+    if MARKER_FROM_TOP_CM is None:
+        print(f"  (no nominal placement for {SHAPE.name}'s markers -- nothing to hold "
+              f"id {DEFAULT_TEE_MARKER_ID}'s row against)")
+    else:
+        _nominal_check()
+    _round_trip(ready)
+    _sim_to_robot_report(pts)
+
+
+def _nominal_check():
+    # The lowest id has a nominal placement the others do not -- horizontally centred,
     # MARKER_FROM_TOP_CM down -- so its row can be held against the geometry.  A measured row
     # is EXPECTED to differ from that by millimetres; only a gross gap means a slipped ruler.
     gx, gy = marker_to_center_offset_cm()
@@ -800,6 +832,9 @@ def main():
           f"{gap:.2f} cm apart"
           + ("   -- as measured" if gap <= MARKER_NOMINAL_TOL_CM else
              f"   -- MORE THAN {MARKER_NOMINAL_TOL_CM:.1f} cm, check that row for a slip"))
+
+
+def _round_trip(ready):
     # Every usable marker has to land the SAME shape centre from the same shape pose --
     # that identity is exactly what lets a blocked marker be swapped for another one.
     print("\n  shape pose            ->  centre seen through each marker  [round trip]")
@@ -813,6 +848,8 @@ def main():
         print(f"  ({sx0:+6.2f}, {sy0:+6.2f}) at {sth_deg:+6.1f} deg  ->  "
               + "   ".join(cells))
 
+
+def _sim_to_robot_report(pts):
     # ---- sim -> robot: only if p0 has been recorded ----
     try:
         p0 = load_origin_pose()

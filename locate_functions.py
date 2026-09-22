@@ -98,17 +98,24 @@ import time
 import cv2
 import numpy as np
 
+import shapes
+
+# Run as a script, ``--shape-name`` has to be honoured BEFORE ``frame_conversions`` is
+# imported: that module bakes the shape's proportions into its functions' default
+# arguments, which bind at def time.  Imported as a library the entry point has already
+# done it, which is why this is guarded.
+if __name__ == "__main__":
+    shapes.select_from_argv()
+
 import frame_conversions as FC
 from frame_conversions import (
     CENTER_MODES,
     DEFAULT_TEE_MARKER_ID,
     MARKER_FROM_TOP_CM,
     MARKER_YAW_ON_TEE_DEG,
-    TEE_BAR_CM,
+    SHAPE,
     TEE_MARKER_IDS,
     TEE_MARKER_POS_CM,
-    TEE_SIZE_CM,
-    TEE_STEM_CM,
     aruco_to_center,
     marker_to_center_offset_cm,
     tee_body_outline_cm,
@@ -142,14 +149,15 @@ from camera_test_id10 import (
     to_cam_m,
 )
 
-# The T's proportions, the marker mount angle and the marker -> shape offset all live in
-# ``frame_conversions`` now and are imported above; ``sim_tee_dims`` below still reads the
-# real mesh, which is what keeps them honest.
-# Absolute, so the shape is found no matter where the program is run from.
+# The shape's proportions, the marker mount angle and the marker -> shape offset all come
+# from ``shapes.ShapeSpec`` through ``frame_conversions`` now, and every one of them is
+# read off THIS mesh -- so there is nothing left to keep in step by hand, for the T or for
+# a V or a rectangle.  ``SHAPE`` is whichever one ``--shape-name`` selected.
+# Absolute paths, so the meshes are found no matter where the program is run from.
 HERE = os.path.dirname(os.path.abspath(__file__))
-SIM_SHAPE_ZUP = os.path.join(HERE, "datasets", "3dshape", "Tshape3d_zup.obj")
-SIM_SHAPE = os.path.join(HERE, "datasets", "3dshape", "Tshape3d.obj")
-SIM_ENV = os.path.join(HERE, "datasets", "3dshape", "2denv4.obj")
+SIM_SHAPE_ZUP = SHAPE.mesh_zup or SHAPE.mesh
+SIM_SHAPE = SHAPE.mesh
+SIM_ENV = SHAPE.env
 
 # Straight from the sim so the two scenes read as the same world: COL_ENV / COL_TEE /
 # COL_FLOOR are pymunk_viser_push's, COL_SIM_ENV is push_t_demo_sim's COL_GHOST green.
@@ -173,65 +181,48 @@ MARKER_AGREE_WARN_CM = 1.0
 
 
 # ======================================================================================
-# the T's own geometry, in its body frame
+# the shape's own geometry, read back off its mesh
 # ======================================================================================
-def _obj_verts(path):
-    """``(N, 3)`` of an .obj's ``v`` lines, or None if it cannot be read."""
+def sim_tee_dims(shape=None):
+    """``(bar_cm, stem_cm)`` read off the mesh -- **for the T only**, else ``None``.
+
+    The crossbar and stem widths are a T's proportions and nothing else's, so this is a
+    reporting convenience rather than part of the measurement path: nothing computes a
+    pose from them any more (the outline does that job, for whatever shape is loaded).
+    ``main`` prints them so a printed T can be held against the mesh the planner was
+    trained on.
+
+    Returns None for a shape that is not a T, or for a mesh that cannot be read.
+    """
+    spec = SHAPE if shape is None else shapes.resolve(shape)
+    if spec.name != "T":
+        return None
     try:
-        return np.array([[float(t) for t in ln.split()[1:4]]
-                         for ln in open(path) if ln.startswith("v ")], dtype=np.float64)
+        o = spec.outline_cm("bbox")
     except (OSError, ValueError):
         return None
-
-
-def sim_tee_dims(size_cm=TEE_SIZE_CM, path=SIM_SHAPE_ZUP):
-    """``(bar_cm, stem_cm)`` for a ``size_cm`` T, read off the sim's own mesh, or None.
-
-    The planner was trained on one particular T, so its proportions are the ground truth
-    and guessing them is how the reported centre drifts.  The z-up mesh is the planner
-    frame (``push_t_demo_realworld.load_geometry`` reads the same file for
-    ``bbox_to_centroid``): footprint in x/y, thickness in z, T pointing down.
-
-    Returns None -- caller falls back to the module defaults -- if the file is missing or
-    does not look like a downward T.
-    """
-    V = _obj_verts(path)
-    if V is None or len(V) < 8:
-        return None
-    xy = V[:, :2]
-    lo, hi = xy.min(axis=0), xy.max(axis=0)
-    span = hi - lo
-    if min(span) <= 0.0:
-        return None
-    scale = size_cm / float(max(span))            # the mesh bbox maps onto size_cm
-    # The crossbar's underside is the second-highest distinct y; the stem's width is the
-    # x extent of the vertices sitting on the bottom edge.
-    ys = np.unique(np.round(xy[:, 1], 6))
+    ys = np.unique(np.round(o[:, 1], 6))
     if len(ys) < 3:
         return None
-    bar = float(ys[-1] - ys[-2])
-    bottom = xy[np.isclose(xy[:, 1], ys[0])]
+    bar = float(ys[-1] - ys[-2])                     # top edge down to the bar's underside
+    bottom = o[np.isclose(o[:, 1], ys[0])]
     stem = float(bottom[:, 0].max() - bottom[:, 0].min())
-    if bar <= 0.0 or stem <= 0.0:
-        return None
-    return bar * scale, stem * scale
+    return (bar, stem) if bar > 0.0 and stem > 0.0 else None
 
 
-def sim_tee_thickness_cm(size_cm=TEE_SIZE_CM, path=SIM_SHAPE_ZUP):
-    """How thick the sim's T is, scaled to a ``size_cm`` shape, or None.
+def sim_tee_thickness_cm(shape=None):
+    """How thick the shape is on the table, centimetres -- its mesh z extent, scaled.
 
-    Same mesh and the same footprint-to-``size_cm`` scale ``sim_tee_dims`` uses, read off
-    the z extent instead -- so the drawn prism is as tall, relative to its footprint, as
-    the one ``push_t_demo_sim`` renders (10 units on a 60 unit box: one sixth).
+    Same mesh and the same mesh-units-per-cm the footprint uses, so the drawn prism is as
+    tall, relative to its footprint, as the one ``push_t_demo_sim`` renders (10 units on
+    the T's 60 unit box: one sixth).
     """
-    V = _obj_verts(path)
-    if V is None or len(V) < 8:
+    spec = SHAPE if shape is None else shapes.resolve(shape)
+    try:
+        t = spec.thickness_cm()
+    except (OSError, ValueError):
         return None
-    span = V[:, :2].max(axis=0) - V[:, :2].min(axis=0)
-    thick = float(V[:, 2].max() - V[:, 2].min())
-    if min(span) <= 0.0 or thick <= 0.0:
-        return None
-    return thick * (size_cm / float(max(span)))
+    return t if t > 0.0 else None
 
 
 # ======================================================================================
@@ -246,16 +237,19 @@ def sim_tee_thickness_cm(size_cm=TEE_SIZE_CM, path=SIM_SHAPE_ZUP):
 #   * theta = 0.  ``Tshape3d_zup.obj`` is authored pointing down, and ``tee_outline_cm``
 #     is built pointing down, so the two zeros agree; ``real_to_sim_pose`` then adds
 #     ``rotation_deg`` on top.
-def sim_alignment(size_cm=TEE_SIZE_CM, bar_cm=TEE_BAR_CM, stem_cm=None, mode="centroid"):
+def sim_alignment(shape=None, mode="centroid"):
     """What the sim expects vs what this module is using -- a printable dict.
 
     ``main`` prints it at startup so a mismatch is visible before any data is taken,
     rather than showing up later as a shape that is offset by a couple of centimetres.
     """
-    out = {"mode": mode, "bar_cm": bar_cm, "stem_cm": bar_cm if stem_cm is None else stem_cm}
-    dims = sim_tee_dims(size_cm)
-    out["sim_bar_cm"], out["sim_stem_cm"] = dims if dims else (None, None)
-    out["centroid_local_cm"] = tee_center_local_cm(size_cm, bar_cm, stem_cm, mode).tolist()
+    spec = SHAPE if shape is None else shapes.resolve(shape)
+    dims = sim_tee_dims(spec)
+    out = {"mode": mode, "shape": spec.name, "size_cm": list(spec.size_cm()),
+           "thickness_cm": spec.thickness_cm()}
+    out["bar_cm"], out["stem_cm"] = dims if dims else (None, None)
+    out["sim_bar_cm"], out["sim_stem_cm"] = out["bar_cm"], out["stem_cm"]
+    out["centroid_local_cm"] = spec.center_local_cm(mode).tolist()
     rw = FC.sim_bridge()
     if rw is None:
         out["bridge"] = "push_t_demo_realworld unavailable -- table frame only"
@@ -345,7 +339,8 @@ ORIGIN_EXTRA_YAW_DEG = 90.0
 
 
 def table_pose(cam, gray, detect_table, marker_len_cm=MARKER_LEN_CM,
-               yaw_offset_deg=YAW_OFFSET_DEG, extra_yaw_deg=ORIGIN_EXTRA_YAW_DEG):
+               yaw_offset_deg=YAW_OFFSET_DEG, extra_yaw_deg=ORIGIN_EXTRA_YAW_DEG,
+               fallback=None):
     """The table frame for this frame: ``(pose, info)``, or ``(None, info)``.
 
     One marker, so there is nothing to fit and nothing to average: ``solvePnP`` on the
@@ -353,6 +348,14 @@ def table_pose(cam, gray, detect_table, marker_len_cm=MARKER_LEN_CM,
     the fallback for the frames before the camera model is up.  Recomputed every call
     rather than cached, so nudging the camera mid-run costs one frame instead of silently
     biasing every reading after it.
+
+    ``fallback`` is a pose from an earlier call, to be returned when the marker is not in
+    view *this* frame -- the arm leaning over the ID-10 corner covers it for whole pushes
+    at a time, and the marker never moves, so its last measured frame is as good as a fresh
+    one for as long as the camera stays put.  ``info["table_cached"]`` says which was
+    returned; ``table_seen`` stays honest about what the frame itself showed.  The choice
+    of *whether* to fall back is the caller's, which is why the pose is passed in rather
+    than remembered here.
 
     What is gone with the other three markers is the redundancy: ``rms`` here is the
     marker's own corner reprojection, which catches a bad detection but says nothing about
@@ -366,12 +369,20 @@ def table_pose(cam, gray, detect_table, marker_len_cm=MARKER_LEN_CM,
     yaw_total_deg = float(yaw_offset_deg) + float(extra_yaw_deg)
     info = {"table_id": ORIGIN_ID, "table_seen": quad is not None,
             "yaw_total_deg": yaw_total_deg}
-    if quad is None:
-        return None, info
-    pose = (pnp_frame(cam, quad, marker_len_cm, yaw_total_deg)
-            or depth_frame(cam, quad, yaw_total_deg))
+    pose = None
+    if quad is not None:
+        pose = (pnp_frame(cam, quad, marker_len_cm, yaw_total_deg)
+                or depth_frame(cam, quad, yaw_total_deg))
+    info["table_cached"] = pose is None and fallback is not None
     if pose is None:
-        return None, info
+        if fallback is None:
+            return None, info
+        pose = fallback
+        info["frame_source"] = pose["source"]
+        info["frame_rms"] = pose["rms"]
+        info["frame_rms_unit"] = pose["rms_unit"]
+        info["origin_cam_cm"] = [float(v * 100.0) for v in pose["t"]]
+        return pose, info
     info["frame_source"] = pose["source"]
     info["frame_rms"] = pose["rms"]
     info["frame_rms_unit"] = pose["rms_unit"]
@@ -453,9 +464,9 @@ def marker_fix(cam, pose, quad, marker_id, offset, tee_len_cm=TEE_LEN_CM,
 
 def locate_shape(cam, detect_table, detect_tee, marker_len_cm=MARKER_LEN_CM,
                  yaw_offset_deg=YAW_OFFSET_DEG, tee_ids=None, tee_len_cm=TEE_LEN_CM,
-                 tee_height_cm=None, size_cm=TEE_SIZE_CM, bar_cm=TEE_BAR_CM, stem_cm=None,
+                 tee_height_cm=None, shape=None,
                  positions=None, mode="centroid", with_sim_pose=True,
-                 prefer_id=None, compare=False):
+                 prefer_id=None, compare=False, table_fallback=None):
     """Locate the T on the table: ``{x_cm, y_cm, theta_rad, ...}``, or ``None``.
 
     **Four markers, not one.**  The shape carries four ArUco markers of different ids on
@@ -525,6 +536,15 @@ def locate_shape(cam, detect_table, detect_tee, marker_len_cm=MARKER_LEN_CM,
     in view, or when every visible one failed to measure -- the reason, per id, is in
     ``locate_shape.last_miss`` so a caller can show it without a second detection pass.
 
+    **The table marker need not be in view every frame.**  ``table_fallback`` is a table
+    pose from an earlier frame (``result["pose"]``, or ``locate_shape.last_table_pose``);
+    when given, a frame with the ID-10 marker covered is measured against it instead of
+    being dropped, and ``result["table_cached"]`` is True.  Whenever the marker *is* in
+    view the frame is solved fresh, and that fresh pose is left in
+    ``locate_shape.last_table_pose`` (``None`` on every other call, including the ones that
+    return ``None`` for want of a shape marker) so a caller can keep it current without
+    a second detection pass.
+
     It never takes the table's nominal dimensions: nothing here depends on the table really
     being 79 x 63 cm, and ``--length`` / ``--width`` only draw the rectangle in the viser
     scene.  What it does depend on, and the four-corner-marker version did not, is the
@@ -537,15 +557,21 @@ def locate_shape(cam, detect_table, detect_tee, marker_len_cm=MARKER_LEN_CM,
                                   "frame_conversions.TEE_MARKER_POS_CM")
         return None
 
+    locate_shape.last_table_pose = None
     ok, frame = cam.read()
     if not ok:
         locate_shape.last_miss = "no frame from the camera"
         return None
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-    pose, info = table_pose(cam, gray, detect_table, marker_len_cm, yaw_offset_deg)
+    pose, info = table_pose(cam, gray, detect_table, marker_len_cm, yaw_offset_deg,
+                            fallback=table_fallback)
+    if pose is not None and not info["table_cached"]:
+        locate_shape.last_table_pose = pose
     if pose is None:
         locate_shape.last_miss = (f"table marker id {ORIGIN_ID} not visible"
+                                  + (" and no earlier pose of it to fall back on"
+                                     if table_fallback is None else "")
                                   if not info["table_seen"] else
                                   f"no pose from table marker id {ORIGIN_ID} "
                                   f"(no camera model and no depth on its corners)")
@@ -564,7 +590,7 @@ def locate_shape(cam, detect_table, detect_tee, marker_len_cm=MARKER_LEN_CM,
         return None
 
     if tee_height_cm is None:
-        tee_height_cm = sim_tee_thickness_cm(size_cm) or 0.0
+        tee_height_cm = sim_tee_thickness_cm(shape) or 0.0
 
     # Increasing id order, first clean read wins.  Anything tried and rejected before it is
     # kept in ``misses`` -- a marker that is visible but never usable (a position that is
@@ -582,7 +608,7 @@ def locate_shape(cam, detect_table, detect_tee, marker_len_cm=MARKER_LEN_CM,
     misses = [f"id {mid} not visible" for mid in blocked]
     for mid in order:
         try:
-            offset = tee_marker_offset(mid, positions, mode, size_cm, bar_cm, stem_cm)
+            offset = tee_marker_offset(mid, positions, mode, shape)
         except (KeyError, ValueError) as exc:
             misses.append(f"id {mid}: {exc}")
             continue
@@ -632,6 +658,7 @@ def locate_shape(cam, detect_table, detect_tee, marker_len_cm=MARKER_LEN_CM,
 
 
 locate_shape.last_miss = None
+locate_shape.last_table_pose = None
 
 
 # ======================================================================================
@@ -653,40 +680,22 @@ def _square(centre, side, z=0.0):
                            (cx + h, cy + h), (cx - h, cy + h)], z)
 
 
-def tee_mesh_cm(size_cm=TEE_SIZE_CM, bar_cm=TEE_BAR_CM, stem_cm=None, mode="centroid",
-                z=0.0, thickness_cm=None):
-    """``(vertices, faces)`` for the T as a solid prism standing on ``z``.
+def tee_mesh_cm(shape=None, mode="centroid", z=0.0, thickness_cm=None):
+    """``(vertices, faces)`` for the shape as a solid prism standing on ``z``, in cm.
 
     The shape sits *on* the table -- ``z = 0`` is its underside, and it is extruded up by
     ``thickness_cm`` -- so it reads as the same object ``push_t_demo_sim`` draws (which
-    renders ``Tshape3d_zup.obj`` itself, 60 x 60 x 10 units, i.e. one sixth of the box
-    thick) rather than as a flat decal on the table.
+    renders the mesh itself, one sixth of its box thick for the T) rather than as a flat
+    decal on the table.
 
-    The outline is concave, so the footprint is built from its two rectangles rather than
-    fanned from one vertex, which would spill triangles outside the shape.  Each rectangle
-    becomes a box: 2 caps + 4 walls.  The two boxes overlap where the stem meets the
-    crossbar, which is invisible in a solid render and saves triangulating a concave prism.
+    This used to hand-build the T out of its two rectangles, because fanning a concave
+    outline from one vertex spills triangles outside the shape.  It now takes the MESH'S
+    OWN up-facing triangles (``shapes.ShapeSpec.prism_cm``), which is the same fix for
+    every concave shape at once -- the T's notches, the V's opening -- and needs no
+    second description of the geometry to keep in step.
     """
-    stem_cm = bar_cm if stem_cm is None else stem_cm
-    if thickness_cm is None:
-        thickness_cm = sim_tee_thickness_cm(size_cm) or size_cm / 6.0
-    h, b = size_cm / 2.0, stem_cm / 2.0
-    y_bar = h - bar_cm
-    cx, cy = tee_center_local_cm(size_cm, bar_cm, stem_cm, mode)
-    z0, z1 = float(z), float(z) + float(thickness_cm)
-    quads = [[(-h, y_bar), (h, y_bar), (h, h), (-h, h)],        # crossbar
-             [(-b, -h), (b, -h), (b, y_bar), (-b, y_bar)]]      # stem
-    verts, faces = [], []
-    for q in quads:
-        k = len(verts)
-        verts.extend([(x - cx, y - cy, z0) for x, y in q])       # 0..3 bottom
-        verts.extend([(x - cx, y - cy, z1) for x, y in q])       # 4..7 top
-        faces.extend([(k, k + 2, k + 1), (k, k + 3, k + 2),                  # bottom
-                      (k + 4, k + 5, k + 6), (k + 4, k + 6, k + 7)])         # top
-        for j in range(4):                                                   # walls
-            a, bb = k + j, k + (j + 1) % 4
-            faces.extend([(a, bb, bb + 4), (a, bb + 4, a + 4)])
-    return np.asarray(verts, dtype=np.float32), np.asarray(faces, dtype=np.uint32)
+    spec = SHAPE if shape is None else shapes.resolve(shape)
+    return spec.prism_cm(mode=mode, z=z, thickness_cm=thickness_cm)
 
 
 def _dtheta_deg(a_deg, b_deg):
@@ -890,10 +899,10 @@ def visualize(cam, detect_table, detect_tee, port=8080, rate_hz=15.0, **kw):
     import viser
 
     mode = kw.get("mode", "centroid")
-    size_cm, bar_cm = kw.get("size_cm", TEE_SIZE_CM), kw.get("bar_cm", TEE_BAR_CM)
-    stem_cm = kw.get("stem_cm", None)
+    spec = kw.get("shape") or SHAPE
+    size_cm = float(max(spec.size_cm()))         # the drawing scale: axes, arrow lengths
     length_cm, width_cm = kw.get("length_cm", LENGTH_CM), kw.get("width_cm", WIDTH_CM)
-    thick_cm = sim_tee_thickness_cm(size_cm) or size_cm / 6.0
+    thick_cm = sim_tee_thickness_cm(spec) or size_cm / 6.0
     top_z = thick_cm + 0.5                       # what rides on top of the shape
 
     server = viser.ViserServer(port=port)
@@ -956,14 +965,13 @@ def visualize(cam, detect_table, detect_tee, port=8080, rate_hz=15.0, **kw):
                  "sim env origin - normalized (0, 0)")
 
     # ---- the shape ----
-    verts, faces = tee_mesh_cm(size_cm, bar_cm, stem_cm, mode, z=0.0,
+    verts, faces = tee_mesh_cm(spec, mode, z=0.0,
                                thickness_cm=thick_cm)
     tee = server.scene.add_frame("/tee", show_axes=False, position=(cx, cy, 0.0))
     server.scene.add_mesh_simple("/tee/mesh", verts, faces, color=COL_TEE,
                                  flat_shading=True)
     server.scene.add_line_segments("/tee/outline",
-                                   _loop_segments(tee_body_outline_cm(size_cm, bar_cm,
-                                                                      stem_cm, mode),
+                                   _loop_segments(tee_body_outline_cm(spec, mode),
                                                   top_z),
                                    colors=(255, 255, 255), thickness=2.0)
     # a stub along the T's own +y, so the heading is readable at a glance
@@ -1163,14 +1171,9 @@ def main():
     ap.add_argument("--width", type=float, default=WIDTH_CM, metavar="CM",
                     help="table extent along +y from the marker; drawing only "
                          "(default %(default)s)")
-    ap.add_argument("--tee-size", type=float, default=TEE_SIZE_CM, metavar="CM",
-                    help="the T's bounding box, both ways (default %(default)s)")
-    ap.add_argument("--tee-bar", type=float, default=None, metavar="CM",
-                    help="crossbar thickness; default is read from the sim mesh "
-                         f"({SIM_SHAPE_ZUP}) so the shape matches what the planner "
-                         f"was trained on, else {TEE_BAR_CM}")
-    ap.add_argument("--tee-stem", type=float, default=None, metavar="CM",
-                    help="stem width; same source as --tee-bar")
+    # The shape's size, outline, thickness and centroid are all READ OFF ITS MESH now --
+    # there is nothing to pass in, and nothing that can be set to a value the planner
+    # disagrees with.  ``--shape-name`` is the only geometry knob left.
     ap.add_argument("--marker-from-top", type=float, default=MARKER_FROM_TOP_CM,
                     metavar="CM",
                     help=f"id-{DEFAULT_TEE_MARKER_ID} marker centre, measured down from "
@@ -1188,6 +1191,7 @@ def main():
                     help="what 'the centre' means: the area centroid, as the sim uses, or "
                          "the middle of the bounding box (default %(default)s)")
     ap.add_argument("--width-px", type=int, default=1280, metavar="PX")
+    shapes.add_shape_argument(ap)
     ap.add_argument("--height-px", type=int, default=720, metavar="PX")
     ap.add_argument("--env", default=SIM_ENV, metavar="OBJ",
                     help="the environment push_t_demo_sim pushes against; its footprint "
@@ -1199,24 +1203,17 @@ def main():
                     help="how often to locate the shape (default %(default)s)")
     args = ap.parse_args()
 
-    # The planner was trained on one particular T, so take its proportions from that mesh
-    # unless the user overrides them.
-    dims = sim_tee_dims(args.tee_size)
-    if dims is None:
-        bar, stem = TEE_BAR_CM, TEE_STEM_CM
-        print(f"note: {SIM_SHAPE_ZUP} not readable -- falling back to bar {bar} / "
-              f"stem {stem} cm; check this matches the printed T")
-    else:
-        bar, stem = dims
-        print(f"T proportions from {SIM_SHAPE_ZUP}: bar {bar:.3f} cm, stem {stem:.3f} cm")
-    bar = args.tee_bar if args.tee_bar is not None else bar
-    stem = args.tee_stem if args.tee_stem is not None else stem
+    print(SHAPE.describe())
+    for problem in SHAPE.check():
+        print(f"  !! {problem}")
 
-    info = sim_alignment(args.tee_size, bar, stem, args.center)
-    print(f"T {args.tee_size:.1f} x {args.tee_size:.1f} cm, bar {bar:.2f}, stem "
-          f"{stem:.2f} cm, centre = {args.center} "
+    info = sim_alignment(SHAPE, args.center)
+    w_cm, h_cm = SHAPE.size_cm()
+    dims = "" if info["bar_cm"] is None else (f", bar {info['bar_cm']:.2f}, stem "
+                                              f"{info['stem_cm']:.2f} cm")
+    print(f"{SHAPE.name} {w_cm:.1f} x {h_cm:.1f} cm{dims}, centre = {args.center} "
           f"at ({info['centroid_local_cm'][0]:+.3f}, {info['centroid_local_cm'][1]:+.3f}) "
-          f"cm from the bbox middle")
+          f"cm from the bbox middle -- all read off {os.path.basename(SIM_SHAPE)}")
 
     # ---- the markers on the shape ----
     # The table in frame_conversions is the source; the two CLI flags are overrides on top
@@ -1229,7 +1226,7 @@ def main():
         positions = {i: (None if v is None else (v[0], v[1], args.marker_yaw_on_tee))
                      for i, v in positions.items()}
     if args.marker_from_top != MARKER_FROM_TOP_CM:
-        row = positions.get(DEFAULT_TEE_MARKER_ID) or (args.tee_size / 2.0, 0.0)
+        row = positions.get(DEFAULT_TEE_MARKER_ID) or (w_cm / 2.0, 0.0)
         positions[DEFAULT_TEE_MARKER_ID] = (row[0], -abs(args.marker_from_top),
                                             args.marker_yaw_on_tee)
         print(f"--marker-from-top {args.marker_from_top:.2f} cm: id "
@@ -1239,40 +1236,44 @@ def main():
     wanted = tuple(sorted({int(i) for i in args.tee_ids})) if args.tee_ids else ready
     missing = [i for i in wanted if i not in ready]
     if missing:
-        raise SystemExit(f"--tee-ids names {missing}, which have no position measured -- "
-                         f"fill in frame_conversions.TEE_MARKER_POS_CM first")
+        raise SystemExit(f"--tee-ids names {missing}, which have no position measured "
+                         f"-- fill in shapes.SHAPES[{SHAPE.name!r}].markers first")
     if not wanted:
-        raise SystemExit("no shape marker is usable -- measure each marker's centre from "
-                         "the T's top-left corner (+x right, -y DOWN) into "
-                         "frame_conversions.TEE_MARKER_POS_CM")
-    print(f"markers on the shape -- position measured from the T's TOP-LEFT corner "
+        raise SystemExit(f"no shape marker is usable -- measure each marker's centre "
+                         f"from the {SHAPE.name}'s top-left corner (+x right, -y DOWN) "
+                         f"into shapes.SHAPES[{SHAPE.name!r}].markers")
+    print(f"markers on the shape -- position measured from the {SHAPE.name}'s TOP-LEFT "
+          f"corner "
           f"(+x right, -y down), then the offset out to the {args.center}:")
     bad = []
     for mid in sorted(positions):
         if mid not in ready:
             print(f"  id {mid}   NOT MEASURED -- put (x_cm, y_cm) from the top-left "
-                  f"corner in frame_conversions.TEE_MARKER_POS_CM[{mid}] to use it")
+                  f"corner in shapes.SHAPES[{SHAPE.name!r}].markers[{mid}] to use it")
             continue
         px, py, _ = tee_marker_pos(mid, positions)
         note = "" if mid in wanted else "   [excluded by --tee-ids]"
         try:
-            dx, dy, yaw = tee_marker_offset(mid, positions, args.center, args.tee_size,
-                                            bar, stem)
+            dx, dy, yaw = tee_marker_offset(mid, positions, args.center, SHAPE)
         except ValueError as exc:
             bad.append(mid)
             print(f"  id {mid}   ({px:+6.2f}, {py:+6.2f}) cm   REJECTED -- {exc}")
             continue
-        bx, by = tee_topleft_to_body_cm(px, py, args.tee_size)
+        bx, by = tee_topleft_to_body_cm(px, py, SHAPE)
         print(f"  id {mid}   ({px:+6.2f}, {py:+6.2f}) cm  ->  body "
               f"({bx:+6.2f}, {by:+6.2f})  ->  offset ({dx:+6.2f}, {dy:+6.2f}) cm, "
               f"mount {yaw:+.1f} deg{note}")
     if [i for i in wanted if i in bad]:
-        raise SystemExit(f"shape marker ids {[i for i in wanted if i in bad]} are measured "
-                         f"to a point that is not on the T -- fix them above first")
+        raise SystemExit(f"shape marker ids {[i for i in wanted if i in bad]} are "
+                         f"measured to a point that is not on the {SHAPE.name} -- fix "
+                         f"them above first")
+    yaws = sorted({tee_marker_pos(i, positions)[2] for i in wanted})
+    mount = (f"turned by {-yaws[0]:+.1f} deg for the mount before it is applied (shape "
+             f"heading = marker heading {-yaws[0]:+.1f} deg)" if len(yaws) == 1 else
+             f"turned by that marker's OWN mount angle before it is applied -- they "
+             f"differ here ({', '.join(f'{y:+.0f}' for y in yaws)} deg)")
     print(f"reading them in increasing id order {list(wanted)}: the lowest one in view "
-          f"wins, so a marker under the arm costs nothing.  The offset is turned by "
-          f"{-args.marker_yaw_on_tee:+.1f} deg for the mount before it is applied "
-          f"(shape heading = marker heading {-args.marker_yaw_on_tee:+.1f} deg)")
+          f"wins, so a marker under the arm costs nothing.  The offset is {mount}")
     if len(wanted) < 2:
         print(f"NOTE: only {len(wanted)} marker is usable, so a blocked marker is still a "
               f"lost frame.  Measure the rest in to get the redundancy.")
@@ -1323,8 +1324,7 @@ def main():
                   tee_ids=wanted, positions=positions,
                   tee_len_cm=args.tee_len, tee_height_cm=args.tee_height,
                   length_cm=args.length, width_cm=args.width,
-                  size_cm=args.tee_size, bar_cm=bar, stem_cm=stem,
-                  mode=args.center, env=env)
+                  shape=SHAPE, mode=args.center, env=env)
     finally:
         cam.close()
 

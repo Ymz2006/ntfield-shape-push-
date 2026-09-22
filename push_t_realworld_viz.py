@@ -56,6 +56,13 @@ import numpy as np
 import trimesh
 import viser
 
+import shapes
+
+# ``--shape-name`` has to land before push_t_demo_realworld (and through it
+# frame_conversions) bind the active shape's mesh, dataset and goal.
+if __name__ == '__main__':
+    shapes.select_from_argv()
+
 import push_t_demo_realworld as rw
 import pymunk_viser_push as base
 from push_t_demo_sim import COL_GHOST, COL_REF
@@ -329,6 +336,7 @@ def run_demo(view: TableView, interval, ref_real=None):
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
+    shapes.add_shape_argument(ap)
     ap.add_argument('--env', default=rw._DEFAULTS['env'])
     ap.add_argument('--shape', default=rw._DEFAULTS['shape'])
     ap.add_argument('--dataPath', default=rw._DEFAULTS['dataPath'])
